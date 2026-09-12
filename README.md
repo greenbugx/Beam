@@ -2,7 +2,7 @@
     <img src="app/src/main/res/drawable/beam_logo.png" height=128px width=auto>
     <h1>BEAM</h1>
     <p><em>"Beam it."</em></p>
-    <h5><em>Send anything. Nearby. Instantly.</em></h5>
+    <h5><em>Send anything. Nearby. Instantly</em></h5>
 </div>
 
 <p align="center">
@@ -10,6 +10,7 @@
     <a href="https://developer.android.com/jetpack/compose"><img src="https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4" alt="Jetpack Compose"></a>
     <a href="https://developers.google.com/nearby/connections/overview"><img src="https://img.shields.io/badge/Transport-Nearby%20Connections-34A853" alt="Nearby Connections"></a>
     <img src="https://img.shields.io/badge/Android-8.0%2B-3DDC84" alt="Android 8.0+">
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-red" alt="AGPL-3.0"></a>
 </p>
 
 > [!WARNING]
@@ -35,15 +36,19 @@ Under the hood it uses Google's Nearby Connections API, which automatically pick
 | UI | Jetpack Compose |
 | Networking | Google Play Services Nearby Connections |
 | Architecture | MVVM with ViewModel |
-| Linting | ktlint |
+| Linting | ktlint (CLI) |
 
 ## Getting Started
 
 ### Prerequisites
 
 - Android Studio (latest stable recommended)
+- JDK 17 or newer
 - An Android device running Android 8.0 (API 26) or newer
 - Google Play Services on the device (required for Nearby Connections)
+
+> [!NOTE]
+> Nearby Connections does not work on emulators - you need two physical devices to test discovery and transfer.
 
 ### Build
 
@@ -81,10 +86,27 @@ app/src/main/java/com/beam/app/
 ## How It Works
 
 1. **Create** -> one device starts a beam and gets a short code
-2. **Join** -> the other device enters the code, or scans the QR(not implemented yet) once available
+2. **Join** -> the other device enters the code, or scans the QR (not implemented yet)
 3. **Connect** -> the joiner's device finds the beam advertising that code and connects automatically
-4. **Send** -> payloads are transferred directly between devices
+4. **Send** -> payloads are transferred directly between devices (file transfer is in active development)
+
+## Roadmap
+
+Beam is built milestone by milestone — see [TODO.md](TODO.md) for the full plan:
+
+- [x] **M1 — Foundation**: native app, custom design system, home screen, create/join flows, Beam codes
+- [x] **M2 — Sessions & Connectivity**: discovery, advertising, connection handling, peer tracking
+- [ ] **M3 — Single File Transfer**: SAF picker, transfer protocol, integrity verification
+- [ ] **M4+ — Large files, multi-user rooms, resumable transfers, QR joining, and more**
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, code style (ktlint), commit conventions, and the PR checklist.
+
+## Security
+
+Found a vulnerability? Please report it privately - see [SECURITY.md](SECURITY.md).
 
 ## License
 
-This project is licensed under [AGPL-3.0](LICENSE)
+This project is licensed under the [GNU AGPL-3.0](LICENSE)

@@ -8,4 +8,5 @@ indent_style = space
 indent_size = 4
 
 [*.{kt,kts}]
-ij_kotlin_code_style_defaults = KOTLIN_OFFICIAL
+ktlint_code_style = ktlint_official
+max_line_length = 120
