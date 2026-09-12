@@ -32,6 +32,7 @@ fun beamButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     style: BeamButtonStyle = BeamButtonStyle.Primary,
+    enabled: Boolean = true,
 ) {
     val palette = BeamTheme.palette
     val interactionSource = remember { MutableInteractionSource() }
@@ -39,7 +40,7 @@ fun beamButton(
 
     val scale =
         animateFloatAsState(
-            targetValue = if (pressed) 0.985f else 1f,
+            targetValue = if (pressed && enabled) 0.985f else 1f,
             animationSpec =
                 spring(
                     dampingRatio = 0.78f,
@@ -59,6 +60,8 @@ fun beamButton(
     val borderColor =
         if (isPrimary) Color.Transparent else palette.border
 
+    val disabledAlpha = if (enabled) 1f else 0.35f
+
     Box(
         modifier =
             modifier
@@ -67,6 +70,7 @@ fun beamButton(
                 .graphicsLayer {
                     scaleX = scale.value
                     scaleY = scale.value
+                    alpha = disabledAlpha
                 }.background(
                     color = background,
                     shape = RoundedCornerShape(18.dp),
@@ -77,6 +81,7 @@ fun beamButton(
                 ).clickable(
                     interactionSource = interactionSource,
                     indication = null,
+                    enabled = enabled,
                     onClick = onClick,
                 ),
         contentAlignment = Alignment.Center,

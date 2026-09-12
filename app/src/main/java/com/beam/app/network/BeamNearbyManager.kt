@@ -23,7 +23,6 @@ class BeamNearbyManager(
         private const val TAG = "BeamNearby"
 
         const val SERVICE_ID = "com.beam.app"
-        private const val LOCAL_DEVICE_NAME = "Beam Device"
 
         private val STRATEGY = Strategy.P2P_CLUSTER
     }
@@ -130,8 +129,8 @@ class BeamNearbyManager(
             }
         }
 
-    fun startAdvertising() {
-        Log.d(TAG, "Starting advertising...")
+    fun startAdvertising(endpointName: String) {
+        Log.d(TAG, "Starting advertising as $endpointName")
 
         val options =
             AdvertisingOptions
@@ -141,7 +140,7 @@ class BeamNearbyManager(
 
         connectionsClient
             .startAdvertising(
-                LOCAL_DEVICE_NAME,
+                endpointName,
                 SERVICE_ID,
                 connectionLifecycleCallback,
                 options,
@@ -173,12 +172,15 @@ class BeamNearbyManager(
             }
     }
 
-    fun requestConnection(endpointId: String) {
+    fun requestConnection(
+        endpointId: String,
+        localEndpointName: String,
+    ) {
         Log.d(TAG, "Requesting connection to $endpointId")
 
         connectionsClient
             .requestConnection(
-                LOCAL_DEVICE_NAME,
+                localEndpointName,
                 endpointId,
                 connectionLifecycleCallback,
             ).addOnSuccessListener {

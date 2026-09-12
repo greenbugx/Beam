@@ -112,9 +112,20 @@ fun homeScreen(
                                 append("*  ")
                                 append(sessionState.message)
 
-                                if (sessionState.endpointName != null) {
+                                sessionState.room?.code?.let { code ->
                                     append("\n  ")
-                                    append(sessionState.endpointName)
+                                    append("Room ")
+                                    append(code)
+                                }
+
+                                val selectedBeam =
+                                    sessionState.discoveredBeams.firstOrNull {
+                                        it.endpointId == sessionState.selectedEndpointId
+                                    }
+
+                                selectedBeam?.name?.let { name ->
+                                    append("\n  ")
+                                    append(name)
                                 }
                             },
                         style =
