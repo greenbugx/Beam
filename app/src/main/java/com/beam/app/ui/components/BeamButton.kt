@@ -23,28 +23,30 @@ import com.beam.app.ui.theme.BeamTheme
 
 enum class BeamButtonStyle {
     Primary,
-    Secondary
+    Secondary,
 }
 
 @Composable
-fun BeamButton(
+fun beamButton(
     text: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    style: BeamButtonStyle = BeamButtonStyle.Primary
+    style: BeamButtonStyle = BeamButtonStyle.Primary,
 ) {
     val palette = BeamTheme.palette
     val interactionSource = remember { MutableInteractionSource() }
     val pressed = interactionSource.collectIsPressedAsState().value
 
-    val scale = animateFloatAsState(
-        targetValue = if (pressed) 0.985f else 1f,
-        animationSpec = spring(
-            dampingRatio = 0.78f,
-            stiffness = 700f
-        ),
-        label = "beamButtonScale"
-    )
+    val scale =
+        animateFloatAsState(
+            targetValue = if (pressed) 0.985f else 1f,
+            animationSpec =
+                spring(
+                    dampingRatio = 0.78f,
+                    stiffness = 700f,
+                ),
+            label = "beamButtonScale",
+        )
 
     val isPrimary = style == BeamButtonStyle.Primary
 
@@ -58,34 +60,33 @@ fun BeamButton(
         if (isPrimary) Color.Transparent else palette.border
 
     Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(60.dp)
-            .graphicsLayer {
-                scaleX = scale.value
-                scaleY = scale.value
-            }
-            .background(
-                color = background,
-                shape = RoundedCornerShape(18.dp)
-            )
-            .border(
-                width = 1.dp,
-                color = borderColor,
-                shape = RoundedCornerShape(18.dp)
-            )
-            .clickable(
-                interactionSource = interactionSource,
-                indication = null,
-                onClick = onClick
-            ),
-        contentAlignment = Alignment.Center
+        modifier =
+            modifier
+                .fillMaxWidth()
+                .height(60.dp)
+                .graphicsLayer {
+                    scaleX = scale.value
+                    scaleY = scale.value
+                }.background(
+                    color = background,
+                    shape = RoundedCornerShape(18.dp),
+                ).border(
+                    width = 1.dp,
+                    color = borderColor,
+                    shape = RoundedCornerShape(18.dp),
+                ).clickable(
+                    interactionSource = interactionSource,
+                    indication = null,
+                    onClick = onClick,
+                ),
+        contentAlignment = Alignment.Center,
     ) {
         BasicText(
             text = text,
-            style = BeamTheme.typography.Button.copy(
-                color = foreground
-            )
+            style =
+                BeamTheme.typography.Button.copy(
+                    color = foreground,
+                ),
         )
     }
 }

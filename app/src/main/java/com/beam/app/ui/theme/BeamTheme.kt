@@ -16,24 +16,25 @@ data class BeamPalette(
     val textMuted: Color,
     val error: Color,
     val warning: Color,
-    val border: Color
+    val border: Color,
 )
 
-private val LocalBeamPalette = staticCompositionLocalOf {
-    BeamPalette(
-        background = BeamColors.Background,
-        surface = BeamColors.Surface,
-        surfaceElevated = BeamColors.SurfaceElevated,
-        lime = BeamColors.Lime,
-        limeDark = BeamColors.LimeDark,
-        textPrimary = BeamColors.TextPrimary,
-        textSecondary = BeamColors.TextSecondary,
-        textMuted = BeamColors.TextMuted,
-        error = BeamColors.Error,
-        warning = BeamColors.Warning,
-        border = BeamColors.Border
-    )
-}
+private val LocalBeamPalette =
+    staticCompositionLocalOf {
+        BeamPalette(
+            background = BeamColors.Background,
+            surface = BeamColors.Surface,
+            surfaceElevated = BeamColors.SurfaceElevated,
+            lime = BeamColors.Lime,
+            limeDark = BeamColors.LimeDark,
+            textPrimary = BeamColors.TextPrimary,
+            textSecondary = BeamColors.TextSecondary,
+            textMuted = BeamColors.TextMuted,
+            error = BeamColors.Error,
+            warning = BeamColors.Warning,
+            border = BeamColors.Border,
+        )
+    }
 
 object BeamTheme {
     val palette: BeamPalette
@@ -45,23 +46,22 @@ object BeamTheme {
 }
 
 @Composable
-fun BeamTheme(
-    content: @Composable () -> Unit
-) {
+fun beamTheme(content: @Composable () -> Unit) {
     CompositionLocalProvider(
-        LocalBeamPalette provides BeamPalette(
-            background = BeamColors.Background,
-            surface = BeamColors.Surface,
-            surfaceElevated = BeamColors.SurfaceElevated,
-            lime = BeamColors.Lime,
-            limeDark = BeamColors.LimeDark,
-            textPrimary = BeamColors.TextPrimary,
-            textSecondary = BeamColors.TextSecondary,
-            textMuted = BeamColors.TextMuted,
-            error = BeamColors.Error,
-            warning = BeamColors.Warning,
-            border = BeamColors.Border
-        ),
-        content = content
+        LocalBeamPalette provides
+            BeamPalette(
+                background = BeamColors.Background,
+                surface = BeamColors.Surface,
+                surfaceElevated = BeamColors.SurfaceElevated,
+                lime = BeamColors.Lime,
+                limeDark = BeamColors.LimeDark,
+                textPrimary = BeamColors.TextPrimary,
+                textSecondary = BeamColors.TextSecondary,
+                textMuted = BeamColors.TextMuted,
+                error = BeamColors.Error,
+                warning = BeamColors.Warning,
+                border = BeamColors.Border,
+            ),
+        content = content,
     )
 }
