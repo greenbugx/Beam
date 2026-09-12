@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Lint, format & compile
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '26'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      # Format check
+      - name: ktlint format check
+        run: |
+          curl -sSLo ktlint \
+            https://github.com/pinterest/ktlint/releases/download/1.8.0/ktlint
+          chmod a+x ktlint
+          ./ktlint
+
+      # Android lint (AGP built-in)
+      - name: Android lint
+        run: ./gradlew :app:lintDebug
+
+      # Compile check only - no APK assembly
+      - name: Compile
+        run: ./gradlew :app:compileDebugKotlin

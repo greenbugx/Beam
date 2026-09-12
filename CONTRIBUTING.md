@@ -80,7 +80,7 @@ This project follows [Conventional Commits](https://www.conventionalcommits.org/
 [optional footer]
 ```
 
-Common types: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `style`, `network`.
+Common types: `ci`, `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `style`, `network`.
 
 ## Project layout
 

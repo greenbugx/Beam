@@ -26,6 +26,13 @@ android {
     buildFeatures {
         compose = true
     }
+
+    lint {
+        // This app has no Fragments (ComponentActivity only), so the check
+        // requiring Fragment >= 1.3.0 for registerForActivityResult is a
+        // false positive and would fail lintDebug on every build.
+        disable += "InvalidFragmentVersionForActivityResult"
+    }
 }
 
 dependencies {
