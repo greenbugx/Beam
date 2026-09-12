@@ -12,16 +12,18 @@
     <img src="https://img.shields.io/badge/Android-8.0%2B-3DDC84" alt="Android 8.0+">
 </p>
 
+> [!WARNING]
+> Beam is on active development stage and currently it's unusable.
 ---
 
-Beam is a peer-to-peer sharing app for Android. Discover nearby devices, connect instantly, and send anything between them without internet or pairing codes or cables.
+Beam is a peer-to-peer sharing app for Android. One device starts a beam and shows a short code, the other enters it, and they're connected without any internet or accounts or cables.
 
 Under the hood it uses Google's Nearby Connections API, which automatically picks the best available transport (Bluetooth, BLE, or Wi-Fi) without any manual setup.
 
 ## Highlights
 
 - **Nearby discovery** -> find other Beam devices around you in real time
-- **Instant connections** -> one tap to create or join a beam, no pairing required
+- **Short code pairing** -> hosts share a 6-character code, joiners type it in and connect automatically
 - **No internet needed** -> everything happens directly between devices
 - **Modern UI** -> fully built with Jetpack Compose and a custom in-house design system
 
@@ -63,21 +65,24 @@ To install directly on a connected device:
 
 ```
 app/src/main/java/com/beam/app/
-├── MainActivity.kt          # Entry point
+├── MainActivity.kt          # Entry point and screen routing
 ├── network/                 # Nearby Connections wrapper
 ├── permissions/             # Runtime permission handling
-├── session/                 # Beam session state and ViewModel
-└── ui/
-    ├── components/          # Reusable UI components
-    ├── home/                # Home screen
-    └── theme/               # Design system (colors, typography)
+├── session/                 # Session state, ViewModel, and models
+├── ui/
+│   ├── components/          # Reusable UI components (buttons, etc.)
+│   ├── home/                # Home screen (create or join)
+│   ├── join/                # Code entry screen for joining
+│   ├── room/                # Active session screen (code display, beams list, peers)
+│   └── theme/               # Design system (colors, typography)
+└── util/                    # Beam code generation and validation
 ```
 
 ## How It Works
 
-1. **Advertise** -> one device creates a beam and starts advertising itself
-2. **Discover** -> nearby devices scan and find the advertised beam
-3. **Connect** -> both sides authenticate and establish a connection
+1. **Create** -> one device starts a beam and gets a short code
+2. **Join** -> the other device enters the code, or scans the QR(not implemented yet) once available
+3. **Connect** -> the joiner's device finds the beam advertising that code and connects automatically
 4. **Send** -> payloads are transferred directly between devices
 
 ## License
