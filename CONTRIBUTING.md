@@ -69,6 +69,20 @@ committed. Run `ktlint -F` before pushing.
 - State flows one direction: action → ViewModel → state → UI. Use
   `StateFlow` for observable state
 
+## Transfer protocol (BEAM/1)
+
+The app-level transfer protocol is fully specified in [PROTOCOL.md](PROTOCOL.md).
+Anything touching file transfer, session handling, or messaging must follow it:
+
+- Read the relevant section of [PROTOCOL.md](PROTOCOL.md) before implementing a
+  protocol behavior (message types, states, chunking, integrity, errors)
+- Keep the protocol decoupled from the transport: protocol code must never
+  depend on Nearby Connections, and UI must never depend on protocol internals
+- If you change protocol behavior, update [PROTOCOL.md](PROTOCOL.md) in the same
+  PR so the document stays authoritative
+- Message names, fields, and states must match the spec exactly; do not invent
+  new messages, IDs, or error codes on the fly
+
 ## Commit messages
 
 This project follows [Conventional Commits](https://www.conventionalcommits.org/):
@@ -122,7 +136,9 @@ The `BeamNearby` tag is the log channel for the entire networking layer.
 4. Run `./gradlew assembleDebug` and make sure it builds
 5. Test on real hardware if your change touches networking, permissions, or
    transfers
-6. Open a PR describing what changed and why, referencing the relevant
+6. If your change touches the transfer protocol or session messaging, make sure
+   it matches [PROTOCOL.md](PROTOCOL.md) and update the doc if behavior changed
+7. Open a PR describing what changed and why, referencing the relevant
    issue if there is one
 
 ## Need help?
