@@ -92,8 +92,10 @@ app/src/main/java/com/beam/app/
 ├── session/                 # Session state, ViewModel, and models
 ├── ui/
 │   ├── components/          # Reusable Beam components
+│   ├── files/               # Beam workspace (shared files, transfers, peers)
 │   ├── home/                # Home screen (create or join)
 │   ├── join/                # Code entry screen for joining
+│   ├── nearby/              # Nearby beam browsing and its code entry
 │   ├── room/                # Active session screen
 │   └── theme/               # Design system (colors, typography)
 └── util/                    # Beam code generation and validation

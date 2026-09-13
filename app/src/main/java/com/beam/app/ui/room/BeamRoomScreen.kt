@@ -2,13 +2,13 @@ package com.beam.app.ui.room
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -19,23 +19,26 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.beam.app.session.BeamSessionState
 import com.beam.app.session.BeamSessionUiState
-import com.beam.app.session.DiscoveredBeam
 import com.beam.app.ui.components.BeamButtonStyle
 import com.beam.app.ui.components.beamButton
+import com.beam.app.ui.components.beamStatusText
 import com.beam.app.ui.theme.BeamTheme
 
 @Composable
 fun beamRoomScreen(
     sessionState: BeamSessionUiState,
-    onJoinBeam: (endpointId: String) -> Unit = {},
+    onStartBeam: () -> Unit = {},
     onStopSession: () -> Unit = {},
 ) {
     val palette = BeamTheme.palette
     val statusBarPadding = WindowInsets.statusBars.asPaddingValues()
+
+    val isHost = sessionState.room != null
 
     Box(
         modifier =
@@ -59,7 +62,7 @@ fun beamRoomScreen(
             ) {
                 BasicText(
                     text =
-                        if (sessionState.room != null) {
+                        if (isHost) {
                             "YOUR BEAM CODE"
                         } else {
                             "JOIN A BEAM"
@@ -82,30 +85,19 @@ fun beamRoomScreen(
                     )
                 }
 
+                Spacer(modifier = Modifier.height(20.dp))
+
                 if (sessionState.message != null) {
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    val statusColor =
-                        when (sessionState.state) {
-                            BeamSessionState.Connected -> {
-                                palette.lime
-                            }
-
-                            BeamSessionState.Failed -> {
+                    beamStatusText(
+                        text = sessionState.message,
+                        color =
+                            if (sessionState.state == BeamSessionState.Failed) {
                                 palette.error
-                            }
-
-                            else -> {
+                            } else {
                                 palette.textMuted
-                            }
-                        }
-
-                    BasicText(
-                        text = "*  ${sessionState.message}",
-                        style =
-                            BeamTheme.typography.Small.copy(
-                                color = statusColor,
-                            ),
+                            },
                     )
                 }
             }
@@ -117,13 +109,9 @@ fun beamRoomScreen(
                         .weight(1f)
                         .verticalScroll(rememberScrollState()),
             ) {
-                val joinerConnected =
-                    sessionState.room == null &&
-                        sessionState.connectedPeers.isNotEmpty()
-
-                if (sessionState.room == null && !joinerConnected) {
+                if (isHost) {
                     BasicText(
-                        text = "NEARBY BEAMS",
+                        text = "SCAN TO JOIN",
                         style =
                             BeamTheme.typography.SectionLabel.copy(
                                 color = palette.textMuted,
@@ -132,35 +120,39 @@ fun beamRoomScreen(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    if (sessionState.discoveredBeams.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        beamQrPlaceholder()
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    BasicText(
+                        text =
+                            "Scan the QR or Enter the code " +
+                                "above to join.",
+                        style =
+                            BeamTheme.typography.Small.copy(
+                                color = palette.textMuted,
+                            ),
+                    )
+
+                    if (sessionState.connectedPeers.isEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+
                         BasicText(
-                            text = "Scanning for beams nearby...",
+                            text =
+                                "At least one device must join.",
                             style =
                                 BeamTheme.typography.Small.copy(
                                     color = palette.textMuted,
                                 ),
                         )
-                    } else {
-                        sessionState.discoveredBeams.forEach { beam ->
-                            beamRow(
-                                beam = beam,
-                                selected =
-                                    beam.endpointId ==
-                                        sessionState.selectedEndpointId,
-                                connected =
-                                    sessionState.connectedPeers.any {
-                                        it.endpointId == beam.endpointId
-                                    },
-                                differentCode =
-                                    beam.code != null &&
-                                        sessionState.joinCode != null &&
-                                        beam.code != sessionState.joinCode,
-                                onJoinBeam = onJoinBeam,
-                            )
-
-                            Spacer(modifier = Modifier.height(12.dp))
-                        }
                     }
+
+                    Spacer(modifier = Modifier.height(16.dp))
                 }
 
                 if (sessionState.connectedPeers.isNotEmpty()) {
@@ -202,12 +194,35 @@ fun beamRoomScreen(
 
                         Spacer(modifier = Modifier.height(10.dp))
                     }
+
+                    if (!isHost) {
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        BasicText(
+                            text = "Waiting for the host to start...",
+                            style =
+                                BeamTheme.typography.Small.copy(
+                                    color = palette.textMuted,
+                                ),
+                        )
+                    }
                 }
             }
 
             Column(
                 modifier = Modifier.fillMaxWidth(),
             ) {
+                if (isHost) {
+                    beamButton(
+                        text = "START BEAM",
+                        onClick = onStartBeam,
+                        style = BeamButtonStyle.Primary,
+                        enabled = sessionState.connectedPeers.isNotEmpty(),
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
+
                 beamButton(
                     text = "STOP BEAM",
                     onClick = onStopSession,
@@ -221,68 +236,42 @@ fun beamRoomScreen(
 }
 
 @Composable
-private fun beamRow(
-    beam: DiscoveredBeam,
-    selected: Boolean,
-    connected: Boolean,
-    differentCode: Boolean,
-    onJoinBeam: (endpointId: String) -> Unit,
-) {
+private fun beamQrPlaceholder() {
     val palette = BeamTheme.palette
 
-    val hint =
-        when {
-            connected -> "Connected"
-            selected -> "Connecting..."
-            differentCode -> "Code ${beam.code} — not the one you entered"
-            else -> "Tap to connect"
-        }
-
-    val hintColor =
-        when {
-            connected -> palette.lime
-            selected -> palette.lime
-            differentCode -> palette.warning
-            else -> palette.textMuted
-        }
-
-    val borderColor =
-        if (selected || connected) palette.lime else palette.border
-
+    // TODO: QR joining lands in M10; this reserves the spot in the lobby at
+    // the square size a real QR code would occupy.
     Box(
         modifier =
             Modifier
                 .fillMaxWidth()
+                .aspectRatio(1f)
                 .background(
                     color = palette.surface,
-                    shape = RoundedCornerShape(18.dp),
+                    shape = RoundedCornerShape(24.dp),
                 ).border(
                     width = 1.dp,
-                    color = borderColor,
-                    shape = RoundedCornerShape(18.dp),
-                ).clickable {
-                    onJoinBeam(beam.endpointId)
-                }.padding(
-                    start = 18.dp,
-                    end = 18.dp,
-                    top = 16.dp,
-                    bottom = 16.dp,
+                    color = palette.border,
+                    shape = RoundedCornerShape(24.dp),
                 ),
+        contentAlignment = Alignment.Center,
     ) {
-        Column {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
             BasicText(
-                text = beam.name,
+                text = "QR CODE",
                 style =
-                    BeamTheme.typography.Body.copy(
-                        color = palette.textPrimary,
+                    BeamTheme.typography.SectionLabel.copy(
+                        color = palette.textMuted,
                     ),
             )
 
+            Spacer(modifier = Modifier.height(6.dp))
+
             BasicText(
-                text = hint,
+                text = "Coming soon",
                 style =
                     BeamTheme.typography.Small.copy(
-                        color = hintColor,
+                        color = palette.textMuted,
                     ),
             )
         }

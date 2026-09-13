@@ -76,8 +76,10 @@ app/src/main/java/com/beam/app/
 ├── session/                 # Session state, ViewModel, and models
 ├── ui/
 │   ├── components/          # Reusable UI components (buttons, etc.)
+│   ├── files/               # Beam workspace (shared files, transfers, peers)
 │   ├── home/                # Home screen (create or join)
 │   ├── join/                # Code entry screen for joining
+│   ├── nearby/              # Nearby beam browsing and its code entry
 │   ├── room/                # Active session screen (code display, beams list, peers)
 │   └── theme/               # Design system (colors, typography)
 └── util/                    # Beam code generation and validation
@@ -86,7 +88,7 @@ app/src/main/java/com/beam/app/
 ## How It Works
 
 1. **Create** -> one device starts a beam and gets a short code
-2. **Join** -> the other device enters the code, or scans the QR (not implemented yet)
+2. **Join** -> the other device enters the code, or taps a discovered beam under nearby beams and enters its code (QR coming later)
 3. **Connect** -> the joiner's device finds the beam advertising that code and connects automatically
 4. **Send** -> payloads are transferred directly between devices (file transfer is in active development)
 

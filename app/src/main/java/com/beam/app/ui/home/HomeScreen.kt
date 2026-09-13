@@ -25,6 +25,7 @@ import com.beam.app.session.BeamSessionState
 import com.beam.app.session.BeamSessionUiState
 import com.beam.app.ui.components.BeamButtonStyle
 import com.beam.app.ui.components.beamButton
+import com.beam.app.ui.components.beamStatusText
 import com.beam.app.ui.theme.BeamTheme
 
 @Composable
@@ -92,46 +93,14 @@ fun homeScreen(
                         modifier = Modifier.height(16.dp),
                     )
 
-                    val statusColor =
-                        when (sessionState.state) {
-                            BeamSessionState.Connected -> {
-                                palette.lime
-                            }
-
-                            BeamSessionState.Failed -> {
+                    beamStatusText(
+                        text = sessionState.message,
+                        color =
+                            if (sessionState.state == BeamSessionState.Failed) {
                                 palette.error
-                            }
-
-                            else -> {
+                            } else {
                                 palette.textMuted
-                            }
-                        }
-                    BasicText(
-                        text =
-                            buildString {
-                                append("*  ")
-                                append(sessionState.message)
-
-                                sessionState.room?.code?.let { code ->
-                                    append("\n  ")
-                                    append("Room ")
-                                    append(code)
-                                }
-
-                                val selectedBeam =
-                                    sessionState.discoveredBeams.firstOrNull {
-                                        it.endpointId == sessionState.selectedEndpointId
-                                    }
-
-                                selectedBeam?.name?.let { name ->
-                                    append("\n  ")
-                                    append(name)
-                                }
                             },
-                        style =
-                            BeamTheme.typography.Small.copy(
-                                color = statusColor,
-                            ),
                     )
                 }
             }

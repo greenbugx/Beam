@@ -12,10 +12,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.beam.app.permissions.BeamPermissions
+import com.beam.app.session.BeamFilesUiState
 import com.beam.app.session.BeamSessionState
 import com.beam.app.session.BeamSessionViewModel
+import com.beam.app.ui.files.beamFilesScreen
 import com.beam.app.ui.home.homeScreen
 import com.beam.app.ui.join.beamJoinScreen
+import com.beam.app.ui.nearby.beamNearbyCodeScreen
+import com.beam.app.ui.nearby.beamNearbyScreen
 import com.beam.app.ui.room.beamRoomScreen
 import com.beam.app.ui.theme.beamTheme
 
@@ -40,6 +44,15 @@ class MainActivity : ComponentActivity() {
             pendingAction = null
         }
 
+    private val filePickerLauncher =
+        registerForActivityResult(
+            ActivityResultContracts.OpenDocument(),
+        ) { uri ->
+            if (uri != null) {
+                beamSessionViewModel.onFilePicked(uri)
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -49,6 +62,10 @@ class MainActivity : ComponentActivity() {
             beamTheme {
                 val uiState by beamSessionViewModel
                     .uiState
+                    .collectAsStateWithLifecycle()
+
+                val filesState by beamSessionViewModel
+                    .filesUiState
                     .collectAsStateWithLifecycle()
 
                 val inSession =
@@ -65,6 +82,9 @@ class MainActivity : ComponentActivity() {
                             BeamSessionState.Connected,
                         )
 
+                val inBeamWorkspace =
+                    uiState.state == BeamSessionState.Sharing
+
                 when {
                     uiState.state == BeamSessionState.EnteringCode -> {
                         beamJoinScreen(
@@ -74,6 +94,12 @@ class MainActivity : ComponentActivity() {
                             onFindBeam = {
                                 beamSessionViewModel.findBeam(joinCodeText)
                             },
+                            onOpenNearby = {
+                                joinCodeText = ""
+                                withNearbyPermissions {
+                                    beamSessionViewModel.openNearbyBeams()
+                                }
+                            },
                             onCancel = {
                                 joinCodeText = ""
                                 beamSessionViewModel.stopSession()
@@ -81,10 +107,44 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
+                    uiState.state == BeamSessionState.NearbyBeams -> {
+                        beamNearbyScreen(
+                            state = uiState,
+                            onJoinBeam = { endpointId ->
+                                joinCodeText = ""
+                                beamSessionViewModel.openCodeEntryFor(endpointId)
+                            },
+                            onCancel = beamSessionViewModel::stopSession,
+                        )
+                    }
+
+                    uiState.state == BeamSessionState.EnteringNearbyCode -> {
+                        beamNearbyCodeScreen(
+                            code = joinCodeText,
+                            onCodeChange = { joinCodeText = it },
+                            sessionState = uiState,
+                            onJoinBeam = {
+                                beamSessionViewModel.findBeam(joinCodeText)
+                            },
+                            onBack = beamSessionViewModel::cancelNearbyCodeEntry,
+                        )
+                    }
+
+                    inBeamWorkspace -> {
+                        beamFilesScreen(
+                            state = filesState,
+                            onAddFiles = {
+                                // Storage Access Framework picker.
+                                filePickerLauncher.launch(arrayOf("*/*"))
+                            },
+                            onLeaveBeam = beamSessionViewModel::stopSession,
+                        )
+                    }
+
                     inSession -> {
                         beamRoomScreen(
                             sessionState = uiState,
-                            onJoinBeam = beamSessionViewModel::joinBeam,
+                            onStartBeam = beamSessionViewModel::startBeam,
                             onStopSession = beamSessionViewModel::stopSession,
                         )
                     }

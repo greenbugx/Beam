@@ -39,22 +39,22 @@
 
 ### Files UI
 
-- [ ] Create `BeamFilesScreen`
-- [ ] Show connected devices
-- [ ] Add `+ ADD FILES` button
-- [ ] Show selected files
-- [ ] Show incoming transfers
-- [ ] Show outgoing transfers
-- [ ] Show transfer progress
+- [x] Create `BeamFilesScreen`
+- [x] Show connected devices
+- [x] Add `+ ADD FILES` button
+- [x] Show selected files
+- [x] Show incoming transfers
+- [x] Show outgoing transfers
+- [x] Show transfer progress
 
 ### File Selection
 
-- [ ] Android Storage Access Framework picker
-- [ ] Select a file
-- [ ] Read file name
-- [ ] Read MIME type
-- [ ] Read file size
-- [ ] Store/access selected `Uri`
+- [x] Android Storage Access Framework picker
+- [x] Select a file
+- [x] Read file name
+- [x] Read MIME type
+- [x] Read file size
+- [x] Store/access selected `Uri`
 
 ### File Protocol
 

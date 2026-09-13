@@ -1,4 +1,4 @@
-package com.beam.app.ui.join
+package com.beam.app.ui.nearby
 
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -44,19 +44,19 @@ import androidx.compose.ui.unit.dp
 import com.beam.app.session.BeamSessionState
 import com.beam.app.session.BeamSessionUiState
 import com.beam.app.ui.components.BeamButtonStyle
+import com.beam.app.ui.components.beamBrandMark
 import com.beam.app.ui.components.beamButton
 import com.beam.app.ui.components.beamStatusText
 import com.beam.app.ui.theme.BeamTheme
 import com.beam.app.util.BeamCode
 
 @Composable
-fun beamJoinScreen(
+fun beamNearbyCodeScreen(
     code: String,
     onCodeChange: (String) -> Unit,
     sessionState: BeamSessionUiState,
-    onFindBeam: () -> Unit,
-    onOpenNearby: () -> Unit = {},
-    onCancel: () -> Unit = {},
+    onJoinBeam: () -> Unit,
+    onBack: () -> Unit,
 ) {
     val palette = BeamTheme.palette
     val statusBarPadding = WindowInsets.statusBars.asPaddingValues()
@@ -101,15 +101,9 @@ fun beamJoinScreen(
             Column(
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                BasicText(
-                    text = "JOIN A BEAM",
-                    style =
-                        BeamTheme.typography.SectionLabel.copy(
-                            color = palette.textMuted,
-                        ),
-                )
+                beamBrandMark()
 
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(26.dp))
 
                 BasicText(
                     text = "Enter the code\nshown on the other device.",
@@ -129,7 +123,7 @@ fun beamJoinScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         repeat(BeamCode.CODE_LENGTH) { index ->
-                            codeCell(
+                            nearbyCodeCell(
                                 char = code.getOrNull(index),
                                 isActive = focused && code.length == index,
                                 caretAlpha = caretAlpha,
@@ -177,8 +171,8 @@ fun beamJoinScreen(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 beamButton(
-                    text = "FIND BEAM",
-                    onClick = onFindBeam,
+                    text = "JOIN BEAM",
+                    onClick = onJoinBeam,
                     style = BeamButtonStyle.Primary,
                     enabled = BeamCode.isValid(code),
                 )
@@ -186,25 +180,8 @@ fun beamJoinScreen(
                 Spacer(modifier = Modifier.height(12.dp))
 
                 beamButton(
-                    text = "SEARCH NEARBY",
-                    onClick = onOpenNearby,
-                    style = BeamButtonStyle.Secondary,
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                beamButton(
-                    text = "SCAN QR CODE",
-                    onClick = {},
-                    style = BeamButtonStyle.Secondary,
-                    enabled = false,
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                beamButton(
                     text = "BACK",
-                    onClick = onCancel,
+                    onClick = onBack,
                     style = BeamButtonStyle.Secondary,
                 )
 
@@ -215,7 +192,7 @@ fun beamJoinScreen(
 }
 
 @Composable
-private fun codeCell(
+private fun nearbyCodeCell(
     char: Char?,
     isActive: Boolean,
     caretAlpha: Float,
