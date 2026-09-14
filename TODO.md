@@ -66,14 +66,14 @@
 
 ### Session Layer
 
-- [ ] Transport abstraction (`Transport`: send frame / receive `Flow` of frames)
-- [ ] Typed session messages: `SESSION_HELLO`, `SESSION_READY`, `SESSION_CLOSE`
-- [ ] Handshake state machine (per-link, both roles)
-- [ ] Version negotiation (`supportedVersions`, major/minor rules, refuse on major mismatch)
-- [ ] Capability exchange + intersection (`CHUNKING` baseline, `MULTI_TRANSFER` optional)
-- [ ] Per-link `mid` counter + duplicate detection
-- [ ] Malformed-frame link policy (discard first, `SESSION_CLOSE` on second)
-- [ ] Session close: graceful (`SESSION_CLOSE`) + abrupt (link lost)
+- [x] Transport abstraction (`Transport`: send frame / receive `Flow` of frames)
+- [x] Typed session messages: `SESSION_HELLO`, `SESSION_READY`, `SESSION_CLOSE`
+- [x] Handshake state machine (per-link, both roles)
+- [x] Version negotiation (`supportedVersions`, major/minor rules, refuse on major mismatch)
+- [x] Capability exchange + intersection (`CHUNKING` baseline, `MULTI_TRANSFER` optional)
+- [x] Per-link `mid` counter + duplicate detection
+- [x] Malformed-frame link policy (discard first, `SESSION_CLOSE` on second)
+- [x] Session close: graceful (`SESSION_CLOSE`) + abrupt (link lost)
 
 ### Offer & Metadata
 
@@ -112,14 +112,14 @@
 
 ### Protocol Test Suite
 
-- [ ] Handshake happy path + version negotiation matrix
+- [x] Handshake happy path + version negotiation matrix
 - [ ] Offer/accept and offer/reject flows (no data after reject)
 - [ ] Full transfer: text file → `VERIFIED` → `COMPLETED` both sides
 - [ ] Edge sizes: empty file, 1 byte, exactly one chunk, chunkSize, chunkSize + 1
 - [ ] Cancel at each state; connection loss at each state
 - [ ] Hash mismatch (flip one byte) → `VERIFY_FAILED`, temp deleted, session alive
 - [ ] Duplicate offer/chunk idempotency
-- [ ] Malformed frames → §13 link policy
+- [x] Malformed frames → §13 link policy
 
 ### On-Device Verification
 
