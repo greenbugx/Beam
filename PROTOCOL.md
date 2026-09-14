@@ -399,10 +399,10 @@ The transport delivers an ordered byte stream per link (Nearby Connections paylo
 | Type | Value | Payload |
 |---|---|---|
 | `CTRL` | `0x01` | Envelope JSON (UTF-8), Section 11 |
-| `DATA` | `0x02` | Chunk header (18 bytes, fixed) + raw chunk bytes |
+| `DATA` | `0x02` | Chunk header (28 bytes, fixed) + raw chunk bytes |
 | `CLOSE` | `0x03` | Empty - immediate link close, no payload |
 
-**Chunk header (DATA frames, fixed 18 bytes, big-endian):**
+**Chunk header (DATA frames, fixed 28 bytes, big-endian):**
 
 ```text
 ┌────────────────────────────┬────────────────────┬───────────────────┬───────────────┐
@@ -414,7 +414,7 @@ The transport delivers an ordered byte stream per link (Nearby Connections paylo
 Rules:
 
 - Max control payload: **64 KiB** (envelopes are small; anything larger is a bug → `INVALID_MESSAGE`).
-- Max DATA payload: **1 MiB + 18 bytes** (chunk sizes are ≤ 1 MiB, Section 19).
+- Max DATA payload: **1 MiB + 28 bytes** (chunk sizes are ≤ 1 MiB, Section 19).
 - The reader loop: read 4 bytes → validate length ≤ max → read `length` bytes → dispatch by type. A truncated read = connection lost.
 - **Malformed frames** (bad length, unknown frame type, oversized, truncated): log, discard the frame; on a second malformed frame within a link, send `SESSION_CLOSE{reason=INVALID_MESSAGE}` and disconnect. Do not attempt stream resync - declare the link dead and rely on transport reconnection + resume.
 - **Framing ≠ chunking.** Framing delimits protocol messages on a stream. Chunking slices a *file* into pieces carried inside DATA frames. One frame always contains exactly one message or one chunk - never both.

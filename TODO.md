@@ -35,7 +35,7 @@
 
 ---
 
-# M3 — Single File Transfer 🚧
+## M3 — Single File Transfer 🚧
 
 ### Files UI
 
@@ -56,22 +56,72 @@
 - [x] Read file size
 - [x] Store/access selected `Uri`
 
-### File Protocol
+### Wire Codec
 
-- [ ] Define transfer message types
-- [ ] Create file metadata model
-- [ ] Generate transfer ID
-- [ ] Send file offer
-- [ ] Receive file offer
-- [ ] Accept file
-- [ ] Reject file
-- [ ] Start file transfer
-- [ ] Stream file bytes
-- [ ] Save received file
-- [ ] Cancel transfer
-- [ ] Handle transfer errors
+- [x] Frame codec (length-prefixed frames, per-type payload limits)
+- [x] Chunk header codec (fixed 28-byte big-endian header)
+- [x] Control envelope codec (JSON, Section 11)
+- [x] Malformed-frame classification (truncated / oversize / unknown type / invalid)
+- [x] Protocol unit test suite
 
-### Verification
+### Session Layer
+
+- [ ] Transport abstraction (`Transport`: send frame / receive `Flow` of frames)
+- [ ] Typed session messages: `SESSION_HELLO`, `SESSION_READY`, `SESSION_CLOSE`
+- [ ] Handshake state machine (per-link, both roles)
+- [ ] Version negotiation (`supportedVersions`, major/minor rules, refuse on major mismatch)
+- [ ] Capability exchange + intersection (`CHUNKING` baseline, `MULTI_TRANSFER` optional)
+- [ ] Per-link `mid` counter + duplicate detection
+- [ ] Malformed-frame link policy (discard first, `SESSION_CLOSE` on second)
+- [ ] Session close: graceful (`SESSION_CLOSE`) + abrupt (link lost)
+
+### Offer & Metadata
+
+- [ ] File metadata model (`fileId`, `transferId`, `name`, `mime`, `sizeBytes`, `sha256`, `chunkSize`, `chunkCount`)
+- [ ] `transferId` / `fileId` generation per the identity model
+- [ ] Validation gate (metadata validated before any allocation or state change)
+- [ ] Filename sanitization (collision-safe, never a path)
+- [ ] `FILE_OFFER` send / receive
+- [ ] `FILE_ACCEPT` / `FILE_REJECT` (with reject reasons)
+
+### Chunk Streaming
+
+- [ ] Transfer state machine as an exhaustive sealed hierarchy (`OFFERED` → `TRANSFERRING` → `VERIFYING` → `COMPLETED`, terminal states)
+- [ ] Chunking at 256 KiB default (last chunk may be short)
+- [ ] Streaming file I/O (never a whole file in RAM, sender or receiver)
+- [ ] Flow control window (bounded sender memory: window × chunkSize)
+- [ ] Cumulative range ACKs (`CHUNK_ACK` every N chunks)
+- [ ] `TRANSFER_START` / `CHUNK_DATA` / `CHUNK_ACK` / `TRANSFER_END`
+- [ ] Offset-addressed temp writes (`.part` pre-sized to `sizeBytes`)
+
+### Integrity & Completion
+
+- [ ] SHA-256 streamed over the assembled temp file (one pass, no copy)
+- [ ] `TRANSFER_VERIFIED` / `VERIFY_FAILED` (hash mismatch → delete temp → FAILED)
+- [ ] Atomic publish to final name before `TRANSFER_VERIFIED`
+- [ ] `.ranges` sidecar (record during transfer, delete on completion/cancel — M3 never resumes)
+- [ ] Temp cleanup on all terminal states + stale-temp sweep on app restart
+
+### Errors, Cancel & Timeouts
+
+- [ ] `TRANSFER_CANCEL` from either side (second cancel is a no-op)
+- [ ] `TRANSFER_ERROR` + the stable error vocabulary (enums + short details, never stack traces)
+- [ ] Timeout contracts as configurable policy objects
+- [ ] Duplicate `FILE_OFFER` → cached decision re-sent, user not re-prompted
+- [ ] Duplicate `CHUNK_DATA` → idempotent write
+
+### Protocol Test Suite
+
+- [ ] Handshake happy path + version negotiation matrix
+- [ ] Offer/accept and offer/reject flows (no data after reject)
+- [ ] Full transfer: text file → `VERIFIED` → `COMPLETED` both sides
+- [ ] Edge sizes: empty file, 1 byte, exactly one chunk, chunkSize, chunkSize + 1
+- [ ] Cancel at each state; connection loss at each state
+- [ ] Hash mismatch (flip one byte) → `VERIFY_FAILED`, temp deleted, session alive
+- [ ] Duplicate offer/chunk idempotency
+- [ ] Malformed frames → §13 link policy
+
+### On-Device Verification
 
 - [ ] Transfer a small text file
 - [ ] Transfer an image
@@ -87,6 +137,7 @@
 - [ ] Buffered streaming
 - [ ] Prevent loading entire files into RAM
 - [ ] Chunk-based transfer
+- [ ] Chunk size / buffer tuning
 - [ ] Transfer progress calculation
 - [ ] Transfer speed calculation
 - [ ] ETA calculation
@@ -128,6 +179,7 @@
 
 # M7 — Reliable Transfers
 
+- [ ] Activate `RESUME` capability + `RESUME_REQUEST`
 - [ ] Chunk IDs
 - [ ] Chunk ordering
 - [ ] Missing-chunk detection
@@ -156,6 +208,7 @@
 
 # M9 — Peer-Assisted Distribution
 
+- [ ] `PEER_ASSIST` capability + `CHUNK_HAVE` / `CHUNK_REQUEST` / `PEER_SOURCE`
 - [ ] Host → Peer A
 - [ ] Host → Peer B
 - [ ] Peer A → Peer B
@@ -183,6 +236,7 @@
 # M11 — PC Support
 
 - [ ] Decide PC transport
+- [ ] TCP/WS transport adapter speaking BEAM/1 frames
 - [ ] Android → browser prototype
 - [ ] Browser → Android prototype
 - [ ] Local-network discovery
@@ -198,6 +252,7 @@
 
 # M12 — Security
 
+- [ ] `ENCRYPTION` capability + HELLO auth extension (HMAC proof / AEAD option)
 - [ ] Secure Beam handshake
 - [ ] Authenticate peers
 - [ ] Prevent unauthorized joins
