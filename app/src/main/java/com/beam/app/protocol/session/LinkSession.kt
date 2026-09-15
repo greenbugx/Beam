@@ -123,6 +123,29 @@ class LinkSession(
         scope.launch { refuse(reason, reason.name) }
     }
 
+    val localIdentity: LocalIdentity get() = local
+
+    fun nextOutboundMid(): String = outMid.next()
+
+    /**
+     * Sends a transfer-scoped CTRL frame.
+     */
+    suspend fun sendControl(envelope: MessageEnvelope) {
+        if (!closed) transport.send(envelope.toCtrlFrame())
+    }
+
+    /** Sends one chunk as a DATA frame (28-byte header + payload). */
+    suspend fun sendData(
+        header: ChunkHeader,
+        payload: ByteArray,
+    ) {
+        if (closed) return
+        val bytes = ByteArray(ChunkHeader.SIZE + payload.size)
+        header.encode().copyInto(bytes)
+        payload.copyInto(bytes, ChunkHeader.SIZE)
+        transport.send(Frame(FrameType.DATA, bytes))
+    }
+
     private suspend fun receiveLoop() {
         transport.incoming.collect { event -> handle(event) }
         abruptClose()
@@ -150,20 +173,28 @@ class LinkSession(
             try {
                 MessageEnvelope.decode(frame.payload.toString(Charsets.UTF_8))
             } catch (e: SerializationException) {
-                onInvalidMessage("Undecodable envelope")
+                refuse(SessionCloseReason.INVALID_MESSAGE, "Undecodable envelope")
                 return
             }
         if (envelope.messageId.isBlank()) {
-            onInvalidMessage("Missing messageId")
+            refuse(SessionCloseReason.INVALID_MESSAGE, "Missing messageId")
             return
         }
         if (inMid.isDuplicate(envelope.messageId)) return
         if (envelope.deviceId.isBlank()) {
-            onInvalidMessage("Missing deviceId")
+            refuse(SessionCloseReason.INVALID_MESSAGE, "Missing deviceId")
             return
         }
         if (envelope.sessionId != local.sessionId) {
             refuse(SessionCloseReason.AUTH_FAILED, "sessionId mismatch")
+            return
+        }
+        if (!isVersionAcceptable(envelope.version)) {
+            refuse(SessionCloseReason.INVALID_MESSAGE, "Envelope version ${envelope.version} rejected")
+            return
+        }
+        if (remoteHello == null && envelope.type != SessionMessageTypes.HELLO) {
+            refuse(SessionCloseReason.INVALID_MESSAGE, "${envelope.type} before SESSION_HELLO")
             return
         }
         when (envelope.type) {
@@ -172,6 +203,13 @@ class LinkSession(
             SessionMessageTypes.CLOSE -> handleClose(envelope)
             else -> handleUpperLayer(envelope)
         }
+    }
+
+    private fun isVersionAcceptable(version: String): Boolean {
+        val incoming = BeamVersion.parse(version) ?: return false
+        val agreed = agreedVersion ?: return true
+        val agreedMajor = BeamVersion.parse(agreed)?.first ?: return false
+        return incoming.first == agreedMajor
     }
 
     private suspend fun handleHello(envelope: MessageEnvelope) {

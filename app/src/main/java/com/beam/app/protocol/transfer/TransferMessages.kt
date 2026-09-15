@@ -1,9 +1,15 @@
 package com.beam.app.protocol.transfer
 
 import com.beam.app.protocol.MessageEnvelope
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -14,6 +20,9 @@ object TransferMessageTypes {
     const val OFFER = "FILE_OFFER"
     const val ACCEPT = "FILE_ACCEPT"
     const val REJECT = "FILE_REJECT"
+    const val START = "TRANSFER_START"
+    const val ACK = "CHUNK_ACK"
+    const val END = "TRANSFER_END"
 }
 
 /** Reasons carried by FILE_REJECT. */
@@ -41,6 +50,67 @@ data class FileRejectBody(
     @SerialName("reason") val reason: RejectReason,
 )
 
+@Serializable(with = IndexRangeSerializer::class)
+data class IndexRange(
+    val start: Long,
+    val endInclusive: Long,
+) {
+    init {
+        require(start >= 0 && endInclusive >= start) { "Invalid range [$start,$endInclusive]" }
+    }
+
+    fun toLongRange(): LongRange = start..endInclusive
+
+    companion object {
+        fun of(range: LongRange): IndexRange = IndexRange(range.start, range.endInclusive)
+    }
+}
+
+object IndexRangeSerializer : KSerializer<IndexRange> {
+    private val delegate = ListSerializer(Long.serializer())
+
+    override val descriptor: SerialDescriptor = delegate.descriptor
+
+    override fun serialize(
+        encoder: Encoder,
+        value: IndexRange,
+    ) {
+        delegate.serialize(encoder, listOf(value.start, value.endInclusive))
+    }
+
+    override fun deserialize(decoder: Decoder): IndexRange {
+        val pair = delegate.deserialize(decoder)
+        require(pair.size == RANGE_ARITY) { "Chunk range needs $RANGE_ARITY elements, got ${pair.size}" }
+        return IndexRange(pair[0], pair[1])
+    }
+
+    private const val RANGE_ARITY = 2
+}
+
+/** Body of TRANSFER_START. */
+@Serializable
+data class TransferStartBody(
+    @SerialName("transferId") val transferId: String,
+    @SerialName("chunkSize") val chunkSize: Int,
+    @SerialName("chunkCount") val chunkCount: Long,
+    @SerialName("startIndex") val startIndex: Long,
+)
+
+/** Body of CHUNK_ACK. */
+@Serializable
+data class ChunkAckBody(
+    @SerialName("transferId") val transferId: String,
+    @SerialName("received") val received: List<IndexRange>,
+    @SerialName("highestContiguous") val highestContiguous: Long,
+)
+
+/** Body of TRANSFER_END. */
+@Serializable
+data class TransferEndBody(
+    @SerialName("transferId") val transferId: String,
+    @SerialName("bytesSent") val bytesSent: Long,
+)
+
 internal val transferJson: Json =
     Json {
         ignoreUnknownKeys = true
@@ -55,6 +125,15 @@ internal fun FileAcceptBody.toJsonElement(): JsonElement =
 
 internal fun FileRejectBody.toJsonElement(): JsonElement =
     transferJson.encodeToJsonElement(FileRejectBody.serializer(), this)
+
+internal fun TransferStartBody.toJsonElement(): JsonElement =
+    transferJson.encodeToJsonElement(TransferStartBody.serializer(), this)
+
+internal fun ChunkAckBody.toJsonElement(): JsonElement =
+    transferJson.encodeToJsonElement(ChunkAckBody.serializer(), this)
+
+internal fun TransferEndBody.toJsonElement(): JsonElement =
+    transferJson.encodeToJsonElement(TransferEndBody.serializer(), this)
 
 internal fun buildTransferEnvelope(
     type: String,

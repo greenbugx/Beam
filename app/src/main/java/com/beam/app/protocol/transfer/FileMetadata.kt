@@ -36,6 +36,18 @@ data class FileMetadata(
     val lastChunkLength: Long
         get() = if (sizeBytes == 0L) 0L else sizeBytes - (derivedChunkCount - 1) * chunkSize
 
+    fun offsetOf(chunkIndex: Long): Long = chunkIndex * chunkSize
+
+    /** length of a chunk is derived from the file size;
+     *
+     * the last chunk is partial. */
+    fun chunkLengthAt(chunkIndex: Long): Long =
+        when {
+            chunkIndex !in 0L until derivedChunkCount -> 0L
+            chunkIndex < derivedChunkCount - 1 -> chunkSize.toLong()
+            else -> lastChunkLength
+        }
+
     fun validate(): List<MetadataError> {
         val errors = mutableListOf<MetadataError>()
         if (sizeBytes < 0) errors += MetadataError.SIZE_NEGATIVE
@@ -83,6 +95,6 @@ data class FileMetadata(
         fun derivedChunkCount(
             sizeBytes: Long,
             chunkSize: Int,
-        ): Long = if (sizeBytes == 0L) 1 else ceil(sizeBytes.toDouble() / chunkSize).toLong()
+        ): Long = if (sizeBytes == 0L) 1 else (sizeBytes - 1) / chunkSize + 1
     }
 }

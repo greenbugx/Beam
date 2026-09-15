@@ -86,13 +86,13 @@
 
 ### Chunk Streaming
 
-- [ ] Transfer state machine as an exhaustive sealed hierarchy (`OFFERED` → `TRANSFERRING` → `VERIFYING` → `COMPLETED`, terminal states)
-- [ ] Chunking at 256 KiB default (last chunk may be short)
-- [ ] Streaming file I/O (never a whole file in RAM, sender or receiver)
-- [ ] Flow control window (bounded sender memory: window × chunkSize)
-- [ ] Cumulative range ACKs (`CHUNK_ACK` every N chunks)
-- [ ] `TRANSFER_START` / `CHUNK_DATA` / `CHUNK_ACK` / `TRANSFER_END`
-- [ ] Offset-addressed temp writes (`.part` pre-sized to `sizeBytes`)
+- [x] Transfer state machine as an exhaustive sealed hierarchy (`OFFERED` → `TRANSFERRING` → `VERIFYING` → `COMPLETED`, terminal states)
+- [x] Chunking at 256 KiB default (last chunk may be short)
+- [x] Streaming file I/O (never a whole file in RAM, sender or receiver)
+- [x] Flow control window (bounded sender memory: window × chunkSize)
+- [x] Cumulative range ACKs (`CHUNK_ACK` every N chunks)
+- [x] `TRANSFER_START` / `CHUNK_DATA` / `CHUNK_ACK` / `TRANSFER_END`
+- [x] Offset-addressed temp writes (`.part` pre-sized to `sizeBytes`)
 
 ### Integrity & Completion
 
@@ -115,7 +115,7 @@
 - [x] Handshake happy path + version negotiation matrix
 - [ ] Offer/accept and offer/reject flows (no data after reject)
 - [ ] Full transfer: text file → `VERIFIED` → `COMPLETED` both sides
-- [ ] Edge sizes: empty file, 1 byte, exactly one chunk, chunkSize, chunkSize + 1
+- [x] Edge sizes: empty file, 1 byte, exactly one chunk, chunkSize, chunkSize + 1
 - [ ] Cancel at each state; connection loss at each state
 - [ ] Hash mismatch (flip one byte) → `VERIFY_FAILED`, temp deleted, session alive
 - [ ] Duplicate offer/chunk idempotency

@@ -232,7 +232,7 @@ class LinkSessionTest {
         }
 
     @Test
-    fun `READY before HELLO is invalid`() =
+    fun `non-HELLO first message closes with INVALID_MESSAGE`() =
         runTest {
             val peer = TestPeer("joiner", this)
             peer.startSession(this)
@@ -248,8 +248,80 @@ class LinkSessionTest {
             peer.transport.receiveFrame(readyEnvelope.toCtrlFrame())
             runCurrent()
 
-            assertTrue(peer.events.filterIsInstance<SessionEvent.InvalidMessageDiscarded>().isNotEmpty())
-            assertEquals(LinkState.Handshaking, peer.session.state.value)
+            val closed = peer.events.last() as SessionEvent.SessionClosed
+            assertEquals(SessionCloseReason.INVALID_MESSAGE, closed.reason)
+            assertEquals(
+                SessionCloseReason.INVALID_MESSAGE,
+                (peer.session.state.value as LinkState.Closed).reason,
+            )
+        }
+
+    @Test
+    fun `unknown type as the first message also closes the link`() =
+        runTest {
+            val peer = TestPeer("joiner", this)
+            peer.startSession(this)
+
+            peer.transport.receiveFrame(
+                buildSessionEnvelope(
+                    type = "FILE_OFFER",
+                    sessionId = SESSION_ID,
+                    deviceId = "dev-remote",
+                    messageId = "00000001",
+                    body = null,
+                ).toCtrlFrame(),
+            )
+            runCurrent()
+
+            assertEquals(
+                SessionCloseReason.INVALID_MESSAGE,
+                (peer.events.last() as SessionEvent.SessionClosed).reason,
+            )
+        }
+
+    @Test
+    fun `malformed envelope version closes with INVALID_MESSAGE`() =
+        runTest {
+            val (_, joiner) = handshakedPair()
+
+            joiner.transport.receiveFrame(
+                buildSessionEnvelope(
+                    type = SessionMessageTypes.HELLO,
+                    sessionId = SESSION_ID,
+                    deviceId = "dev-remote",
+                    messageId = "00000099",
+                    body = null,
+                ).copy(version = "HTTP/1.1").toCtrlFrame(),
+            )
+            runCurrent()
+
+            assertEquals(
+                SessionCloseReason.INVALID_MESSAGE,
+                (joiner.events.last() as SessionEvent.SessionClosed).reason,
+            )
+        }
+
+    @Test
+    fun `envelope with a different major than agreed closes with INVALID_MESSAGE`() =
+        runTest {
+            val (_, joiner) = handshakedPair()
+            assertEquals(LinkState.Active, joiner.session.state.value)
+
+            joiner.transport.receiveFrame(
+                buildSessionEnvelope(
+                    type = "FILE_OFFER",
+                    sessionId = SESSION_ID,
+                    deviceId = "dev-remote",
+                    messageId = "00000077",
+                    body = null,
+                ).copy(version = "BEAM/2.0").toCtrlFrame(),
+            )
+            runCurrent()
+
+            assertEquals(
+                SessionCloseReason.INVALID_MESSAGE,
+                (joiner.events.last() as SessionEvent.SessionClosed).reason,
+            )
         }
 
     @Test
@@ -316,52 +388,80 @@ class LinkSessionTest {
         }
 
     @Test
-    fun `unknown message type before ACTIVE refuses but forwards while ACTIVE`() =
+    fun `unknown message type between HELLO and READY is discarded`() =
         runTest {
             val peer = TestPeer("joiner", this)
             peer.startSession(this)
 
-            fun unknownEnvelope(mid: String) =
+            peer.transport.receiveFrame(helloEnvelope(messageId = "00000001").toCtrlFrame())
+            runCurrent()
+
+            // Handshake only half done: upper-layer traffic is discarded.
+            peer.transport.receiveFrame(
                 buildSessionEnvelope(
                     type = "FILE_OFFER",
                     sessionId = SESSION_ID,
                     deviceId = "dev-remote",
-                    messageId = mid,
+                    messageId = "00000002",
                     body = null,
-                )
-
-            // Before ACTIVE: discarded under the strike policy.
-            peer.transport.receiveFrame(unknownEnvelope("00000001").toCtrlFrame())
-            runCurrent()
-            assertTrue(peer.events.filterIsInstance<SessionEvent.InvalidMessageDiscarded>().isNotEmpty())
-
-            // Complete the handshake with fresh mids (dedup must not eat them).
-            peer.transport.receiveFrame(helloEnvelope(messageId = "00000002").toCtrlFrame())
-            runCurrent()
-            val ready = peer.transport.sent.last()
-            assertEquals(SessionMessageTypes.READY, ready.typeName())
-
-            peer.transport.receiveFrame(
-                buildSessionEnvelope(
-                    type = SessionMessageTypes.READY,
-                    sessionId = SESSION_ID,
-                    deviceId = "dev-remote",
-                    messageId = "00000003",
-                    body = SessionReadyBody("BEAM/1.0").toJsonElement(),
                 ).toCtrlFrame(),
             )
             runCurrent()
-            assertEquals(LinkState.Active, peer.session.state.value)
 
-            // While ACTIVE: unknown types are forwarded, never fatal.
-            peer.transport.receiveFrame(unknownEnvelope("00000004").toCtrlFrame())
-            runCurrent()
-            assertEquals(
-                SessionEvent.ControlReceived::class,
-                peer.events.last()::class,
+            assertTrue(peer.events.filterIsInstance<SessionEvent.InvalidMessageDiscarded>().isNotEmpty())
+            assertEquals(LinkState.Handshaking, peer.session.state.value)
+        }
+
+    @Test
+    fun `unknown message type while ACTIVE is forwarded`() =
+        runTest {
+            val (_, joiner) = handshakedPair()
+            assertEquals(LinkState.Active, joiner.session.state.value)
+
+            joiner.transport.receiveFrame(
+                buildSessionEnvelope(
+                    type = "FILE_OFFER",
+                    sessionId = SESSION_ID,
+                    deviceId = "dev-remote",
+                    messageId = "00000050",
+                    body = null,
+                ).toCtrlFrame(),
             )
-            val forwarded = peer.events.last() as SessionEvent.ControlReceived
+            runCurrent()
+
+            val forwarded = joiner.events.last() as SessionEvent.ControlReceived
             assertEquals("FILE_OFFER", forwarded.envelope.type)
+        }
+
+    @Test
+    fun `sendControl and sendData emit the frames a peer expects`() =
+        runTest {
+            val peer = TestPeer("host", this, role = SessionRole.HOST)
+            peer.startSession(this)
+
+            peer.session.sendData(
+                ChunkHeader(UUID.fromString("11111111-2222-3333-4444-555555555555"), 3, 4),
+                byteArrayOf(1, 2, 3, 4),
+            )
+            peer.session.sendControl(
+                buildSessionEnvelope(
+                    type = "FILE_OFFER",
+                    sessionId = SESSION_ID,
+                    deviceId = peer.session.localIdentity.deviceId,
+                    messageId = peer.session.nextOutboundMid(),
+                    body = null,
+                ),
+            )
+            runCurrent()
+
+            // Index 0 is the HELLO this peer sent when the session started.
+            assertEquals(FrameType.DATA, peer.transport.sent[1].type)
+            val dataPayload = peer.transport.sent[1].payload
+            assertEquals(ChunkHeader.SIZE + 4, dataPayload.size)
+            val header = ChunkHeader.decode(dataPayload)
+            assertEquals(3L, header.chunkIndex)
+            assertEquals(4, header.chunkLength)
+            assertEquals("FILE_OFFER", peer.transport.sent[2].typeName())
         }
 
     @Test

@@ -21,6 +21,23 @@ class FrameMalformedTest {
     }
 
     @Test
+    fun `rejects a length field larger than any legal frame`() {
+        val wire = ByteArray(FrameCodec.HEADER_SIZE)
+        // 0xFFFFFFFF as u32 reads back as -1 once masked into an Int.
+        wire[0] = 0xFF.toByte()
+        wire[1] = 0xFF.toByte()
+        wire[2] = 0xFF.toByte()
+        wire[3] = 0xFF.toByte()
+        wire[4] = FrameType.CTRL.value
+
+        val failure =
+            assertThrows(FrameCodecException::class.java) {
+                FrameCodec.decode(wire)
+            }
+        assertEquals(FrameCodecKind.OVERSIZE, failure.kind)
+    }
+
+    @Test
     fun `rejects unknown frame type`() {
         val wire = FrameCodec.encode(Frame(FrameType.CTRL, ByteArray(1)))
         wire[4] = 0x7F

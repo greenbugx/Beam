@@ -53,6 +53,29 @@ class TransferMessagesTest {
         assertEquals(RejectReason.BUSY, decoded.reason)
     }
 
+    @Test
+    fun `chunk ack ranges use the spec's two-element array form`() {
+        val body =
+            ChunkAckBody(
+                transferId = "tid",
+                received = listOf(IndexRange(0, 11), IndexRange(13, 13)),
+                highestContiguous = 11,
+            )
+
+        val json = body.toJsonElement().toString()
+        assertTrue("wire form was $json", json.contains("\"received\":[[0,11],[13,13]]"))
+
+        val decoded = body.toJsonElement().decodeTransferBody(ChunkAckBody.serializer(), TransferMessageTypes.ACK)
+        assertEquals(listOf(IndexRange(0, 11), IndexRange(13, 13)), decoded.received)
+        assertEquals(11L, decoded.highestContiguous)
+    }
+
+    @Test(expected = TransferProtocolException::class)
+    fun `chunk ack range must be a two-element array`() {
+        val bad = transferJson.parseToJsonElement("""{"transferId":"tid","received":[[0,1,2]],"highestContiguous":0}""")
+        bad.decodeTransferBody(ChunkAckBody.serializer(), TransferMessageTypes.ACK)
+    }
+
     @Test(expected = TransferProtocolException::class)
     fun `missing body is rejected`() {
         val envelope =

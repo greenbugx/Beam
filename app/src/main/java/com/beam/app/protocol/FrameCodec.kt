@@ -31,7 +31,12 @@ object FrameCodec {
     /**
      * Decodes one frame from a region of [bytes] starting at [offset].
      *
-     * @throws FrameCodecException if the region does not hold exactly one valid frame.
+     * The region must hold at least one complete frame;
+     *
+     * bytes after that frame are ignored, so call `decodeStream` for consecutive frames on a
+     * real transport stream.
+     *
+     * @throws FrameCodecException if the region does not hold a valid frame.
      */
     fun decode(
         bytes: ByteArray,
@@ -42,6 +47,12 @@ object FrameCodec {
             throw FrameCodecException(FrameCodecKind.TRUNCATED, "Expected at least $HEADER_SIZE bytes, got $length")
         }
         val payloadLength = readUnsignedInt(bytes, offset)
+        if (payloadLength < 0) {
+            throw FrameCodecException(
+                FrameCodecKind.OVERSIZE,
+                "Payload length ${payloadLength.toUInt()} exceeds any legal frame",
+            )
+        }
         val typeByte = bytes[offset + 4]
         val type =
             FrameType.from(typeByte)

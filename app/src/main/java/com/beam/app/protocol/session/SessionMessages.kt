@@ -35,6 +35,7 @@ enum class SessionCloseReason {
     UNSUPPORTED_VERSION,
     AUTH_FAILED,
     INVALID_MESSAGE,
+    INTERNAL_ERROR,
 }
 
 object SessionMessageTypes {
