@@ -21,6 +21,12 @@ interface TransferWire {
     suspend fun sendAck(body: ChunkAckBody)
 
     suspend fun sendEnd(body: TransferEndBody)
+
+    /** Receiver → sender after a hash match. */
+    suspend fun sendVerified(body: TransferVerifiedBody)
+
+    /** Receiver → sender on hash mismatch. */
+    suspend fun sendVerifyFailed(body: VerifyFailedBody)
 }
 
 class TransferStorageException(

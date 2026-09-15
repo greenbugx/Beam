@@ -23,6 +23,8 @@ object TransferMessageTypes {
     const val START = "TRANSFER_START"
     const val ACK = "CHUNK_ACK"
     const val END = "TRANSFER_END"
+    const val VERIFIED = "TRANSFER_VERIFIED"
+    const val VERIFY_FAILED = "VERIFY_FAILED"
 }
 
 /** Reasons carried by FILE_REJECT. */
@@ -111,6 +113,21 @@ data class TransferEndBody(
     @SerialName("bytesSent") val bytesSent: Long,
 )
 
+/** Body of TRANSFER_VERIFIED. */
+@Serializable
+data class TransferVerifiedBody(
+    @SerialName("transferId") val transferId: String,
+    @SerialName("sha256") val sha256: String,
+)
+
+/** Body of VERIFY_FAILED. */
+@Serializable
+data class VerifyFailedBody(
+    @SerialName("transferId") val transferId: String,
+    @SerialName("expectedSha256") val expectedSha256: String,
+    @SerialName("actualSha256") val actualSha256: String,
+)
+
 internal val transferJson: Json =
     Json {
         ignoreUnknownKeys = true
@@ -134,6 +151,12 @@ internal fun ChunkAckBody.toJsonElement(): JsonElement =
 
 internal fun TransferEndBody.toJsonElement(): JsonElement =
     transferJson.encodeToJsonElement(TransferEndBody.serializer(), this)
+
+internal fun TransferVerifiedBody.toJsonElement(): JsonElement =
+    transferJson.encodeToJsonElement(TransferVerifiedBody.serializer(), this)
+
+internal fun VerifyFailedBody.toJsonElement(): JsonElement =
+    transferJson.encodeToJsonElement(VerifyFailedBody.serializer(), this)
 
 internal fun buildTransferEnvelope(
     type: String,

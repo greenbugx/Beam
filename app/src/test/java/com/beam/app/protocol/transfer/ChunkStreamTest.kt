@@ -81,11 +81,15 @@ private class PipedTransfer(
     override suspend fun sendEnd(body: TransferEndBody) {
         receiver.onEnd(body)
     }
+
+    override suspend fun sendVerified(body: TransferVerifiedBody) = Unit
+
+    override suspend fun sendVerifyFailed(body: VerifyFailedBody) = Unit
 }
 
-/** Records everything without routing
- *
- * for manual flow-control pacing. */
+/**
+ * Records everything without routing, for manual flow-control pacing.
+ */
 private class RecordingWire : TransferWire {
     var started = false
     val chunks = mutableListOf<Pair<ChunkHeader, ByteArray>>()
@@ -109,6 +113,10 @@ private class RecordingWire : TransferWire {
         ended = true
         endBody = body
     }
+
+    override suspend fun sendVerified(body: TransferVerifiedBody) = Unit
+
+    override suspend fun sendVerifyFailed(body: VerifyFailedBody) = Unit
 }
 
 class ChunkStreamTest {

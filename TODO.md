@@ -96,11 +96,11 @@
 
 ### Integrity & Completion
 
-- [ ] SHA-256 streamed over the assembled temp file (one pass, no copy)
-- [ ] `TRANSFER_VERIFIED` / `VERIFY_FAILED` (hash mismatch → delete temp → FAILED)
-- [ ] Atomic publish to final name before `TRANSFER_VERIFIED`
-- [ ] `.ranges` sidecar (record during transfer, delete on completion/cancel — M3 never resumes)
-- [ ] Temp cleanup on all terminal states + stale-temp sweep on app restart
+- [x] SHA-256 streamed over the assembled temp file (one pass, no copy)
+- [x] `TRANSFER_VERIFIED` / `VERIFY_FAILED` (hash mismatch → delete temp → FAILED)
+- [x] Atomic publish to final name before `TRANSFER_VERIFIED`
+- [x] `.ranges` sidecar (record during transfer, delete on completion/cancel — M3 never resumes)
+- [x] Temp cleanup on all terminal states + stale-temp sweep on app restart
 
 ### Errors, Cancel & Timeouts
 

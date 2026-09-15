@@ -103,6 +103,7 @@ app/src/main/java/com/beam/app/
 ├── MainActivity.kt          # Entry point and screen routing
 ├── network/                 # Nearby Connections wrapper
 ├── permissions/             # Runtime permission handling
+├── protocol/                # BEAM/1 protocol: wire codec, session, file transfer
 ├── session/                 # Session state, ViewModel, and models
 ├── ui/
 │   ├── components/          # Reusable Beam components
