@@ -36,6 +36,7 @@ enum class RejectReason {
     INVALID_METADATA,
     UNSUPPORTED,
     RESOURCE_EXHAUSTED,
+    EXPIRED,
 }
 
 /** Body of FILE_ACCEPT. */
@@ -126,6 +127,22 @@ data class VerifyFailedBody(
     @SerialName("transferId") val transferId: String,
     @SerialName("expectedSha256") val expectedSha256: String,
     @SerialName("actualSha256") val actualSha256: String,
+)
+
+/** Body of TRANSFER_ERROR. */
+@Serializable
+data class TransferErrorBody(
+    @SerialName("transferId") val transferId: String,
+    @SerialName("code") val code: TransferErrorCode,
+    @SerialName("detail") val detail: String? = null,
+)
+
+/** Body of TRANSFER_CANCEL. */
+@Serializable
+data class TransferCancelBody(
+    @SerialName("transferId") val transferId: String,
+    @SerialName("code") val code: TransferErrorCode,
+    @SerialName("detail") val detail: String? = null,
 )
 
 internal val transferJson: Json =

@@ -113,9 +113,52 @@ class ChunkReceiver(
             state.on(TransferEvent.TransferEnded)
             ReceiveEndStatus.READY_TO_VERIFY
         } else {
-            state.on(TransferEvent.FatalError)
+            state.on(TransferEvent.FatalError(TransferError(TransferErrorCode.INTERNAL_ERROR)))
             ReceiveEndStatus.INCOMPLETE
         }
+    }
+
+    suspend fun cancel(error: TransferError) {
+        if (state.isTerminal) return
+        val transitioned =
+            try {
+                state.on(TransferEvent.CancelRequested(error))
+                true
+            } catch (e: IllegalTransferTransition) {
+                false
+            }
+        if (!transitioned) return
+        abandon()
+        partFile.delete()
+        runCatching {
+            wire.sendCancel(TransferCancelBody(metadata.transferId, error.code, error.detail.ifBlank { null }))
+        }
+    }
+
+    /** Applies TRANSFER_CANCEL from the peer. */
+    suspend fun onPeerCancel(body: TransferCancelBody) {
+        if (body.transferId != metadata.transferId) {
+            throw TransferProtocolException("CANCEL for another transfer: ${body.transferId}")
+        }
+        cancel(TransferError(body.code, body.detail ?: ""))
+    }
+
+    /** Applies TRANSFER_ERROR from the peer. */
+    suspend fun onPeerError(body: TransferErrorBody) {
+        if (body.transferId != metadata.transferId) {
+            throw TransferProtocolException("ERROR for another transfer: ${body.transferId}")
+        }
+        if (state.isTerminal) return
+        val transitioned =
+            try {
+                state.on(TransferEvent.FatalError(TransferError(body.code, body.detail ?: "")))
+                true
+            } catch (e: IllegalTransferTransition) {
+                false
+            }
+        if (!transitioned) return
+        abandon()
+        partFile.delete()
     }
 
     /** Releases the temp file without deleting it. */

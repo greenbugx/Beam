@@ -5,10 +5,12 @@ package com.beam.app.protocol.transfer
 import com.beam.app.protocol.ChunkHeader
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -16,6 +18,7 @@ import org.junit.rules.TemporaryFolder
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.UUID
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 private fun chunkPayload(index: Long): ByteArray =
@@ -61,6 +64,8 @@ private class PipedTransfer(
     val receiver = ChunkReceiver(metadata, tempDir, this)
 
     val acks = mutableListOf<ChunkAckBody>()
+    val errors = mutableListOf<TransferErrorBody>()
+    val cancels = mutableListOf<TransferCancelBody>()
 
     override suspend fun sendStart(body: TransferStartBody) {
         receiver.onStart(body)
@@ -85,6 +90,15 @@ private class PipedTransfer(
     override suspend fun sendVerified(body: TransferVerifiedBody) = Unit
 
     override suspend fun sendVerifyFailed(body: VerifyFailedBody) = Unit
+
+    override suspend fun sendError(body: TransferErrorBody) {
+        errors += body
+    }
+
+    override suspend fun sendCancel(body: TransferCancelBody) {
+        cancels += body
+        sender.onPeerCancel(body)
+    }
 }
 
 /**
@@ -117,6 +131,18 @@ private class RecordingWire : TransferWire {
     override suspend fun sendVerified(body: TransferVerifiedBody) = Unit
 
     override suspend fun sendVerifyFailed(body: VerifyFailedBody) = Unit
+
+    var errorBody: TransferErrorBody? = null
+
+    override suspend fun sendError(body: TransferErrorBody) {
+        errorBody = body
+    }
+
+    var cancelBody: TransferCancelBody? = null
+
+    override suspend fun sendCancel(body: TransferCancelBody) {
+        cancelBody = body
+    }
 }
 
 class ChunkStreamTest {
@@ -261,5 +287,132 @@ class ChunkStreamTest {
             assertTrue(wire.ended)
             assertEquals(10L * 256, wire.endBody?.bytesSent)
             job.join()
+        }
+
+    @Test
+    fun `sender cancel while window-blocked aborts within one chunk`() =
+        runTest(timeout = 15.seconds) {
+            val metadata = testMetadata(sizeBytes = 10L * 256, chunkSize = 256)
+            val wire = RecordingWire()
+            val sender =
+                ChunkSender(
+                    metadata = metadata,
+                    openStream = { ByteArrayInputStream(sourceBytes(10)) },
+                    wire = wire,
+                    window = 1,
+                )
+
+            val job = async { runCatching { sender.run() } }
+            runCurrent()
+            assertEquals(1, wire.chunks.size)
+            assertTrue(job.isActive)
+
+            sender.cancel(TransferError(TransferErrorCode.TRANSFER_CANCELLED, "user tapped stop"))
+            runCurrent()
+
+            assertEquals(TransferPhase.Cancelled, sender.state.phase)
+            assertEquals(TransferErrorCode.TRANSFER_CANCELLED, wire.cancelBody?.code)
+            assertEquals(1, wire.chunks.size)
+            assertTrue(job.await().exceptionOrNull() is TransferCancelledException)
+        }
+
+    @Test
+    fun `receiver-side cancel propagates to the sender and deletes the temp file`() =
+        runTest(timeout = 15.seconds) {
+            val metadata = testMetadata(sizeBytes = 2L * 256, chunkSize = 256)
+            val wire = PipedTransfer(metadata, temp.newFolder())
+            val transferUuid = UUID.fromString(metadata.transferId)
+
+            wire.receiver.onStart(TransferStartBody(metadata.transferId, 256, 2, 0))
+            wire.receiver.onChunk(ChunkHeader(transferUuid, 0, 256), chunkPayload(0))
+            assertTrue(wire.receiver.partFile.exists())
+
+            wire.receiver.cancel(TransferError(TransferErrorCode.TRANSFER_CANCELLED, "changed my mind"))
+
+            assertEquals(TransferPhase.Cancelled, wire.receiver.state.phase)
+            assertEquals(TransferPhase.Cancelled, wire.sender.state.phase)
+            assertTrue(wire.cancels.isNotEmpty())
+            assertFalse(wire.receiver.partFile.exists())
+        }
+
+    @Test
+    fun `cancel is idempotent on both sides`() =
+        runTest(timeout = 15.seconds) {
+            val metadata = testMetadata(sizeBytes = 2L * 256, chunkSize = 256)
+            val wire = PipedTransfer(metadata, temp.newFolder())
+            val transferUuid = UUID.fromString(metadata.transferId)
+
+            wire.receiver.onStart(TransferStartBody(metadata.transferId, 256, 2, 0))
+            wire.receiver.onChunk(ChunkHeader(transferUuid, 0, 256), chunkPayload(0))
+
+            // The initiator's cancel plus the peer's acknowledging cancel.
+            wire.receiver.cancel(TransferError(TransferErrorCode.TRANSFER_CANCELLED))
+            assertEquals(2, wire.cancels.size)
+
+            wire.receiver.cancel(TransferError(TransferErrorCode.TRANSFER_CANCELLED))
+            wire.sender.cancel(TransferError(TransferErrorCode.TRANSFER_CANCELLED))
+            assertEquals(2, wire.cancels.size)
+        }
+}
+
+class ChunkTimeoutTest {
+    private val policy =
+        TimeoutPolicy(
+            transferInactivityMillis = 100,
+            offerMillis = 100,
+            acceptToStartMillis = 100,
+            ackMillis = 100,
+            verificationMillis = 100,
+        )
+
+    @Test
+    fun `inactivity timeout aborts a window-blocked sender with TRANSFER_TIMEOUT`() =
+        runTest(timeout = 15.seconds) {
+            val metadata = testMetadata(sizeBytes = 10L * 256, chunkSize = 256)
+            val wire = RecordingWire()
+            val sender =
+                ChunkSender(
+                    metadata = metadata,
+                    openStream = { ByteArrayInputStream(sourceBytes(10)) },
+                    wire = wire,
+                    window = 1,
+                    timeouts = TransferTimeouts(policy),
+                )
+
+            val job = async { runCatching { sender.run() } }
+            advanceTimeBy(100.milliseconds)
+            runCurrent()
+
+            assertTrue(job.isCompleted)
+            assertEquals(TransferPhase.Failed, sender.state.phase)
+            assertEquals(TransferErrorCode.TRANSFER_TIMEOUT, wire.errorBody?.code)
+            assertTrue(job.await().exceptionOrNull() is TransferTimeoutException)
+        }
+
+    @Test
+    fun `an ack before the timer expires prevents the timeout`() =
+        runTest(timeout = 15.seconds) {
+            val metadata = testMetadata(sizeBytes = 10L * 256, chunkSize = 256)
+            val wire = RecordingWire()
+            val sender =
+                ChunkSender(
+                    metadata = metadata,
+                    openStream = { ByteArrayInputStream(sourceBytes(10)) },
+                    wire = wire,
+                    window = 1,
+                    timeouts = TransferTimeouts(policy),
+                )
+
+            val job = async { sender.run() }
+            advanceTimeBy(99.milliseconds)
+            runCurrent()
+            assertTrue(job.isActive)
+
+            sender.onAck(ChunkAckBody(metadata.transferId, listOf(IndexRange(0, 0)), 0))
+            advanceTimeBy(99.milliseconds)
+            runCurrent()
+            assertTrue(job.isActive)
+            assertNull(wire.errorBody)
+            job.cancel()
         }
 }

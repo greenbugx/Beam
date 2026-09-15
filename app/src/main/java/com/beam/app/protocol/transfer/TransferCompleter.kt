@@ -15,6 +15,7 @@ class TransferCompleter(
     private val tempDir: File,
     private val wire: TransferWire,
     private val sidecar: RangesSidecar = RangesSidecar(tempDir, metadata.transferId),
+    private val timeouts: TransferTimeouts = TransferTimeouts(),
 ) {
     val partFile: File
         get() = File(tempDir, "${metadata.transferId}.part")
@@ -34,7 +35,10 @@ class TransferCompleter(
             throw TransferStorageException("Missing temp file for transfer ${metadata.transferId}")
         }
         return try {
-            val actual = FileVerifier.hash(partFile)
+            val actual =
+                timeouts.verification("Verification timed out for ${metadata.transferId}") {
+                    FileVerifier.hash(partFile)
+                }
             if (actual == metadata.sha256) {
                 publish(destination)
                 wire.sendVerified(TransferVerifiedBody(metadata.transferId, metadata.sha256))

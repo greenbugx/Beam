@@ -27,6 +27,12 @@ interface TransferWire {
 
     /** Receiver → sender on hash mismatch. */
     suspend fun sendVerifyFailed(body: VerifyFailedBody)
+
+    /** TRANSFER_ERROR: per-transfer fatal problem. */
+    suspend fun sendError(body: TransferErrorBody)
+
+    /** TRANSFER_CANCEL: user/sender abort from either side. */
+    suspend fun sendCancel(body: TransferCancelBody)
 }
 
 class TransferStorageException(

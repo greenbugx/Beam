@@ -23,6 +23,50 @@ sealed interface TransferPhase {
     data object Failed : TransferPhase
 }
 
+/** Stable error vocabulary carried by TRANSFER_ERROR / FILE_REJECT / SESSION_CLOSE. */
+enum class TransferErrorCode {
+    INVALID_MESSAGE,
+    INVALID_METADATA,
+    UNSUPPORTED_VERSION,
+    UNSUPPORTED_FEATURE,
+    TRANSFER_REJECTED,
+    TRANSFER_CANCELLED,
+    INSUFFICIENT_STORAGE,
+    CONNECTION_LOST,
+    CHUNK_INVALID,
+    HASH_MISMATCH,
+    TRANSFER_TIMEOUT,
+    PERMISSION_DENIED,
+    RESOURCE_EXHAUSTED,
+    INTERNAL_ERROR,
+    AUTH_FAILED,
+}
+
+data class TimeoutPolicy(
+    val handshakeMillis: Long = 10_000,
+    val offerMillis: Long = 60_000,
+    val acceptToStartMillis: Long = 10_000,
+    val transferInactivityMillis: Long = 30_000,
+    val maxConsecutiveInactivity: Int = 3,
+    val ackMillis: Long = 15_000,
+    val verificationMillis: Long = 120_000,
+) {
+    init {
+        require(handshakeMillis > 0 && offerMillis > 0 && acceptToStartMillis > 0) {
+            "Timeouts must be positive"
+        }
+        require(transferInactivityMillis > 0 && ackMillis > 0 && verificationMillis > 0) {
+            "Timeouts must be positive"
+        }
+        require(maxConsecutiveInactivity >= 1) { "maxConsecutiveInactivity must be >= 1" }
+    }
+
+    companion object {
+        /** Section 31 recommended starting values. */
+        val RECOMMENDED: TimeoutPolicy = TimeoutPolicy()
+    }
+}
+
 /** Drivers.
  * Check Section 18 of PROTOCOL.md for the state machine table.
  */
@@ -46,10 +90,22 @@ sealed interface TransferEvent {
 
     data object HashMismatched : TransferEvent
 
-    data object CancelRequested : TransferEvent
+    /** Cancelled by [TransferError], either side. */
+    data class CancelRequested(
+        val error: TransferError,
+    ) : TransferEvent
 
-    data object FatalError : TransferEvent
+    /** Any fatal condition; [TransferError] names the Section 30 vocabulary entry. */
+    data class FatalError(
+        val error: TransferError,
+    ) : TransferEvent
 }
+
+/** One protocol error: Section 30 enum + short human-readable detail (never stack traces). */
+data class TransferError(
+    val code: TransferErrorCode,
+    val detail: String = "",
+)
 
 class IllegalTransferTransition(
     from: TransferPhase,

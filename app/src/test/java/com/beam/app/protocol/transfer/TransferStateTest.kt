@@ -23,7 +23,8 @@ class TransferStateTest {
         listOf(
             TransferEvent.FileRejected to TransferPhase.Rejected,
             TransferEvent.OfferExpired to TransferPhase.Expired,
-            TransferEvent.CancelRequested to TransferPhase.Cancelled,
+            TransferEvent.CancelRequested(TransferError(TransferErrorCode.TRANSFER_CANCELLED)) to
+                TransferPhase.Cancelled,
         ).forEach { (event, expected) ->
             val machine = machineOf(TransferPhase.Offered)
             assertEquals(expected, machine.on(event))
@@ -43,7 +44,10 @@ class TransferStateTest {
     fun `cancel works from offered transferring and paused`() {
         listOf(TransferPhase.Offered, TransferPhase.Transferring, TransferPhase.Paused).forEach { phase ->
             val machine = machineOf(phase)
-            assertEquals(TransferPhase.Cancelled, machine.on(TransferEvent.CancelRequested))
+            assertEquals(
+                TransferPhase.Cancelled,
+                machine.on(TransferEvent.CancelRequested(TransferError(TransferErrorCode.TRANSFER_CANCELLED))),
+            )
         }
     }
 
@@ -51,7 +55,10 @@ class TransferStateTest {
     fun `fatal errors fail from transferring paused and verifying`() {
         listOf(TransferPhase.Transferring, TransferPhase.Paused, TransferPhase.Verifying).forEach { phase ->
             val machine = machineOf(phase)
-            assertEquals(TransferPhase.Failed, machine.on(TransferEvent.FatalError))
+            assertEquals(
+                TransferPhase.Failed,
+                machine.on(TransferEvent.FatalError(TransferError(TransferErrorCode.INTERNAL_ERROR))),
+            )
         }
     }
 
@@ -79,7 +86,8 @@ class TransferStateTest {
             TransferPhase.Completed to TransferEvent.FileAccepted,
             TransferPhase.Rejected to TransferEvent.TransferStarted,
             TransferPhase.Failed to TransferEvent.LinkRestored,
-            TransferPhase.Cancelled to TransferEvent.CancelRequested,
+            TransferPhase.Cancelled to
+                TransferEvent.CancelRequested(TransferError(TransferErrorCode.TRANSFER_CANCELLED)),
             TransferPhase.Expired to TransferEvent.FileAccepted,
         ).forEach { (phase, event) ->
             val machine = machineOf(phase)

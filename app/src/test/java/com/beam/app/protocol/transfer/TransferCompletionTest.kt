@@ -41,6 +41,10 @@ private class CompletionWire : TransferWire {
     override suspend fun sendVerifyFailed(body: VerifyFailedBody) {
         verifyFailed += body
     }
+
+    override suspend fun sendError(body: TransferErrorBody) = Unit
+
+    override suspend fun sendCancel(body: TransferCancelBody) = Unit
 }
 
 class FileVerifierTest {

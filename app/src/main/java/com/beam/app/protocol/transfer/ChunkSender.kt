@@ -10,10 +10,14 @@ class ChunkSender(
     private val openStream: () -> InputStream,
     private val wire: TransferWire,
     private val window: Int = ChunkPlan.DEFAULT_WINDOW_CHUNKS,
+    private val timeouts: TransferTimeouts = TransferTimeouts(),
 ) {
+    val state = TransferStateMachine(TransferPhase.Offered)
+
     private val plan = ChunkPlan(metadata.sizeBytes, metadata.chunkSize)
     private val transferUuid = UUID.fromString(metadata.transferId)
     private val acked = RangeTracker()
+    private val canceller = TransferCanceller()
 
     private val windowReleased = Channel<Unit>(Channel.CONFLATED)
     private var sentCount = 0L
@@ -22,6 +26,75 @@ class ChunkSender(
         private set
 
     suspend fun run(): Long {
+        try {
+            state.on(TransferEvent.FileAccepted)
+            state.on(TransferEvent.TransferStarted)
+            sendAll()
+            state.on(TransferEvent.TransferEnded)
+            return bytesSent
+        } catch (e: TransferCancelledException) {
+            throw e
+        } catch (e: TransferTimeoutException) {
+            fail(TransferErrorCode.TRANSFER_TIMEOUT, e.message ?: "transfer timed out")
+            throw e
+        } catch (e: TransferStorageException) {
+            fail(TransferErrorCode.INTERNAL_ERROR, e.message ?: "storage failure")
+            throw e
+        } catch (e: TransferProtocolException) {
+            fail(TransferErrorCode.INTERNAL_ERROR, e.message ?: "protocol violation")
+            throw e
+        } catch (e: Exception) {
+            fail(TransferErrorCode.INTERNAL_ERROR, e.message ?: "unexpected failure")
+            throw e
+        }
+    }
+
+    suspend fun cancel(error: TransferError) {
+        if (state.isTerminal) return
+        val transitioned =
+            try {
+                state.on(TransferEvent.CancelRequested(error))
+                true
+            } catch (e: IllegalTransferTransition) {
+                false
+            }
+        if (!transitioned) return
+        canceller.cancel(error)
+        windowReleased.trySend(Unit)
+        runCatching {
+            wire.sendCancel(TransferCancelBody(metadata.transferId, error.code, error.detail.ifBlank { null }))
+        }
+    }
+
+    /** Applies a CHUNK_ACK from the receiver.
+     *
+     * Idempotent. */
+    suspend fun onAck(body: ChunkAckBody) {
+        if (body.transferId != metadata.transferId) {
+            throw TransferProtocolException("ACK for another transfer: ${body.transferId}")
+        }
+        val newlyAcked = acked.addAll(body.received.map { it.toLongRange() })
+        if (newlyAcked > 0) windowReleased.trySend(Unit)
+    }
+
+    /** Applies TRANSFER_CANCEL from the peer. */
+    suspend fun onPeerCancel(body: TransferCancelBody) {
+        if (body.transferId != metadata.transferId) {
+            throw TransferProtocolException("CANCEL for another transfer: ${body.transferId}")
+        }
+        cancel(TransferError(body.code, body.detail ?: ""))
+    }
+
+    /** Applies TRANSFER_ERROR from the peer. */
+    suspend fun onPeerError(body: TransferErrorBody) {
+        if (body.transferId != metadata.transferId) {
+            throw TransferProtocolException("ERROR for another transfer: ${body.transferId}")
+        }
+        fail(body.code, body.detail ?: "peer reported error")
+        windowReleased.trySend(Unit)
+    }
+
+    private suspend fun sendAll() {
         wire.sendStart(
             TransferStartBody(
                 transferId = metadata.transferId,
@@ -33,6 +106,9 @@ class ChunkSender(
         val chunkBuffer = ByteArray(metadata.chunkSize)
         openStream().use { stream ->
             for (index in 0L until plan.chunkCount) {
+                if (state.phase != TransferPhase.Transferring) {
+                    throw TransferCancelledException(TransferError(TransferErrorCode.TRANSFER_CANCELLED))
+                }
                 awaitWindowSlot()
                 val length = plan.length(index).toInt()
                 readFully(stream, chunkBuffer, length)
@@ -43,23 +119,32 @@ class ChunkSender(
             }
         }
         wire.sendEnd(TransferEndBody(metadata.transferId, bytesSent))
-        return bytesSent
-    }
-
-    /** Applies a CHUNK_ACK from the receiver
-     *
-     * Idempotent. */
-    suspend fun onAck(body: ChunkAckBody) {
-        if (body.transferId != metadata.transferId) {
-            throw TransferProtocolException("ACK for another transfer: ${body.transferId}")
-        }
-        val newlyAcked = acked.addAll(body.received.map { it.toLongRange() })
-        if (newlyAcked > 0) windowReleased.trySend(Unit)
     }
 
     private suspend fun awaitWindowSlot() {
-        while (sentCount - acked.receivedCount >= window) {
-            windowReleased.receive()
+        timeouts.inactivity("No ACK progress within inactivity window") {
+            while (sentCount - acked.receivedCount >= window) {
+                if (state.phase != TransferPhase.Transferring) {
+                    throw TransferCancelledException(TransferError(TransferErrorCode.TRANSFER_CANCELLED))
+                }
+                windowReleased.receive()
+            }
+        }
+    }
+
+    /** Marks FAILED and reports TRANSFER_ERROR. */
+    private suspend fun fail(
+        code: TransferErrorCode,
+        detail: String,
+    ) {
+        if (state.isTerminal) return
+        try {
+            state.on(TransferEvent.FatalError(TransferError(code, detail)))
+        } catch (e: IllegalTransferTransition) {
+            return
+        }
+        runCatching {
+            wire.sendError(TransferErrorBody(metadata.transferId, code, detail))
         }
     }
 
