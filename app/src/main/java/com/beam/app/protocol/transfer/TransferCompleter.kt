@@ -17,6 +17,9 @@ class TransferCompleter(
     private val sidecar: RangesSidecar = RangesSidecar(tempDir, metadata.transferId),
     private val timeouts: TransferTimeouts = TransferTimeouts(),
 ) {
+    var destinationUsed: File? = null
+        private set
+
     val partFile: File
         get() = File(tempDir, "${metadata.transferId}.part")
 
@@ -67,22 +70,40 @@ class TransferCompleter(
     }
 
     private fun publish(destination: File) {
+        val target = resolveCollision(destination)
         try {
-            destination.parentFile?.mkdirs()
-            val moved = partFile.renameTo(destination)
-            if (!moved) {
+            target.parentFile?.mkdirs()
+            val moved = partFile.renameTo(target)
+            if (moved) {
+                partFile.delete()
+            } else {
                 // Cross-filesystem fallback: copy-then-delete, hash already verified.
                 partFile.inputStream().use { input ->
-                    destination.outputStream().use { output ->
+                    target.outputStream().use { output ->
                         input.copyTo(output)
                     }
                 }
-                deleteTemp()
+                partFile.delete()
             }
+            destinationUsed = target
         } catch (e: java.io.IOException) {
             deleteTemp()
-            throw TransferStorageException("Cannot publish to $destination", e)
+            throw TransferStorageException("Cannot publish to $target", e)
         }
+    }
+
+    private fun resolveCollision(destination: File): File {
+        if (!destination.exists()) return destination
+        val name = destination.nameWithoutExtension
+        val ext = destination.extension
+        var candidate = destination
+        var n = 0
+        while (candidate.exists()) {
+            n++
+            val suffixed = if (ext.isEmpty()) "$name ($n)" else "$name ($n).$ext"
+            candidate = File(destination.parentFile, suffixed)
+        }
+        return candidate
     }
 
     private fun deleteTemp() {

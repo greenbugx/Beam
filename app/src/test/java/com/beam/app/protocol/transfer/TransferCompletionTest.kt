@@ -83,6 +83,13 @@ class RangesSidecarTest {
     }
 
     @Test
+    fun `malformed sidecar lines are skipped`() {
+        val sidecar = RangesSidecar(tmp.root, "tid-4")
+        File(tmp.root, "tid-4.ranges").writeText("0-3\ngarbage\nx-1\n10-\n7-9\n")
+        assertEquals(listOf(0L..3L, 7L..9L), sidecar.read())
+    }
+
+    @Test
     fun `delete removes the sidecar`() {
         val sidecar = RangesSidecar(tmp.root, "tid-3")
         sidecar.flush(listOf(0L..0L))
@@ -226,6 +233,23 @@ class TransferCompleterTest {
             assertEquals(CompletionStatus.PUBLISHED, status)
             assertTrue(destination.exists() && destination.length() == 0L)
             assertFalse(part.exists())
+        }
+
+    @Test
+    fun `existing destination auto-renames instead of overwriting`() =
+        runBlocking {
+            val content = "abc".toByteArray()
+            writePart(content)
+            val destination = File(tmp.root, "notes.txt").apply { writeText("original") }
+
+            val completer = newCompleter(metadata(content.size.toLong(), ABC_SHA256))
+            val status = completer.complete(destination)
+
+            assertEquals(CompletionStatus.PUBLISHED, status)
+            assertEquals("original", destination.readText())
+            val published = File(tmp.root, "notes (1).txt")
+            assertEquals("abc", published.readText())
+            assertEquals(published, completer.destinationUsed)
         }
 
     @Test

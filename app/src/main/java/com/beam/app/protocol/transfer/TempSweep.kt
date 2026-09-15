@@ -9,23 +9,32 @@ class RangesSidecar(
     private val file: File
         get() = File(tempDir, "$transferId.ranges")
 
+    /** Flushes coalesced ranges to disk; 
+     * 
+     * writes via temp-file + rename. */
     fun flush(ranges: List<LongRange>) {
         tempDir.mkdirs()
-        file.writeText(ranges.joinToString(separator = "\n") { "${it.first}-${it.last}" } + "\n")
+        val temp = File(tempDir, "$transferId.ranges.tmp")
+        temp.writeText(ranges.joinToString(separator = "\n") { "${it.first}-${it.last}" } + "\n")
+        if (!temp.renameTo(file)) {
+            temp.delete()
+            throw java.io.IOException("Cannot write ranges sidecar for $transferId")
+        }
     }
 
-    /** Parses a sidecar back into ranges
-     *
-     * empty when the file is absent or blank. */
+    /** Parses a sidecar back into ranges; empty when absent;
+     * 
+     * malformed lines are skipped. */
     fun read(): List<LongRange> {
         if (!file.exists()) return emptyList()
         return file
             .readLines()
             .filter { it.isNotBlank() }
-            .map { line ->
+            .mapNotNull { line ->
                 val parts = line.split("-")
-                val start = parts[0].toLong()
-                val end = parts[1].toLong()
+                if (parts.size != 2) return@mapNotNull null
+                val start = parts[0].trim().toLongOrNull() ?: return@mapNotNull null
+                val end = parts[1].trim().toLongOrNull() ?: return@mapNotNull null
                 start..end
             }
     }
