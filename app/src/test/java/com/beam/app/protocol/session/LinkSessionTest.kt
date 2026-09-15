@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+
 package com.beam.app.protocol.session
 
 import com.beam.app.protocol.ChunkHeader
@@ -20,7 +22,7 @@ private const val BEAM_CODE = "BEAM01"
 
 /** One LinkSession wired to a [FakeTransport], with its collected events. */
 private class TestPeer(
-    val name: String,
+    name: String,
     scope: TestScope,
     versions: List<String> = listOf(MessageEnvelope.PROTOCOL_VERSION),
     capabilities: Set<String> = setOf(SessionCapabilities.CHUNKING),
