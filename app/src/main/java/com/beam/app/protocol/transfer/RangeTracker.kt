@@ -7,7 +7,7 @@ class RangeTracker {
 
     /** Applies coalesced [ranges]. */
     fun addAll(ranges: List<LongRange>): Int =
-        ranges.sumOf { range -> (range.start..range.endInclusive).count { add(it) } }
+        ranges.sumOf { range -> (range.first..range.last).count { add(it) } }
 
     /** Number of distinct chunks received. */
     val receivedCount: Int

@@ -11,7 +11,7 @@ class FrameMalformedTest {
     fun `rejects truncated buffer at every cut`() {
         val wire = FrameCodec.encode(Frame(FrameType.CTRL, "payload".toByteArray()))
 
-        for (cut in 0 until wire.size) {
+        for (cut in wire.indices) {
             val exception =
                 assertThrows("cut at $cut", FrameCodecException::class.java) {
                     FrameCodec.decode(wire.copyOf(cut))

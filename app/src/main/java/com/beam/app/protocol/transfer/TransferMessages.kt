@@ -64,7 +64,7 @@ data class IndexRange(
     fun toLongRange(): LongRange = start..endInclusive
 
     companion object {
-        fun of(range: LongRange): IndexRange = IndexRange(range.start, range.endInclusive)
+        fun of(range: LongRange): IndexRange = IndexRange(range.first, range.last)
     }
 }
 
