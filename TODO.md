@@ -77,12 +77,12 @@
 
 ### Offer & Metadata
 
-- [ ] File metadata model (`fileId`, `transferId`, `name`, `mime`, `sizeBytes`, `sha256`, `chunkSize`, `chunkCount`)
-- [ ] `transferId` / `fileId` generation per the identity model
-- [ ] Validation gate (metadata validated before any allocation or state change)
-- [ ] Filename sanitization (collision-safe, never a path)
-- [ ] `FILE_OFFER` send / receive
-- [ ] `FILE_ACCEPT` / `FILE_REJECT` (with reject reasons)
+- [x] File metadata model (`fileId`, `transferId`, `name`, `mime`, `sizeBytes`, `sha256`, `chunkSize`, `chunkCount`)
+- [x] `transferId` / `fileId` generation per the identity model
+- [x] Validation gate (metadata validated before any allocation or state change)
+- [x] Filename sanitization (collision-safe, never a path)
+- [x] `FILE_OFFER` send / receive
+- [x] `FILE_ACCEPT` / `FILE_REJECT` (with reject reasons)
 
 ### Chunk Streaming
 
@@ -119,7 +119,7 @@
 - [ ] Cancel at each state; connection loss at each state
 - [ ] Hash mismatch (flip one byte) → `VERIFY_FAILED`, temp deleted, session alive
 - [ ] Duplicate offer/chunk idempotency
-- [x] Malformed frames → §13 link policy
+- [x] Malformed frames → link policy
 
 ### On-Device Verification
 
