@@ -21,6 +21,7 @@ class ChunkSender(
 
     private val windowReleased = Channel<Unit>(Channel.CONFLATED)
     private var sentCount = 0L
+    private var inactivityStrikes = 0
 
     var bytesSent = 0L
         private set
@@ -122,13 +123,32 @@ class ChunkSender(
     }
 
     private suspend fun awaitWindowSlot() {
-        timeouts.inactivity("No ACK progress within inactivity window") {
-            while (sentCount - acked.receivedCount >= window) {
-                if (state.phase != TransferPhase.Transferring) {
-                    throw TransferCancelledException(TransferError(TransferErrorCode.TRANSFER_CANCELLED))
-                }
-                windowReleased.receive()
+        while (sentCount - acked.receivedCount >= window) {
+            if (state.phase !is TransferPhase.Transferring && state.phase !is TransferPhase.Paused) {
+                throw TransferCancelledException(TransferError(TransferErrorCode.TRANSFER_CANCELLED))
             }
+            try {
+                timeouts.inactivity("No ACK progress within inactivity window") {
+                    windowReleased.receive()
+                }
+            } catch (e: TransferTimeoutException) {
+                if (state.phase is TransferPhase.Transferring) {
+                    state.on(TransferEvent.LinkLost)
+                }
+                inactivityStrikes += 1
+                if (inactivityStrikes >= timeouts.maxConsecutiveInactivity) {
+                    fail(
+                        TransferErrorCode.TRANSFER_TIMEOUT,
+                        "No ACK progress after $inactivityStrikes inactivity pauses",
+                    )
+                    throw e
+                }
+                continue
+            }
+            if (state.phase is TransferPhase.Paused) {
+                state.on(TransferEvent.LinkRestored)
+            }
+            inactivityStrikes = 0
         }
     }
 

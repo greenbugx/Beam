@@ -15,6 +15,9 @@ class TransferTimeoutException(
 class TransferTimeouts(
     private val policy: TimeoutPolicy = TimeoutPolicy.RECOMMENDED,
 ) {
+    /** Consecutive inactivity expiries a transfer may pause before failing. */
+    val maxConsecutiveInactivity: Int get() = policy.maxConsecutiveInactivity
+
     /** Runs [block] under the [millis] budget; expiry raises [TransferTimeoutException]. */
     suspend fun <T> bounded(
         millis: Long,

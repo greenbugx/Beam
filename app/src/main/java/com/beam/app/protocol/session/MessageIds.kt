@@ -29,6 +29,6 @@ class MidTracker(
     }
 
     private companion object {
-        const val DEFAULT_CAPACITY = 1024
+        const val DEFAULT_CAPACITY = 64
     }
 }

@@ -104,11 +104,11 @@
 
 ### Errors, Cancel & Timeouts
 
-- [ ] `TRANSFER_CANCEL` from either side (second cancel is a no-op)
-- [ ] `TRANSFER_ERROR` + the stable error vocabulary (enums + short details, never stack traces)
-- [ ] Timeout contracts as configurable policy objects
-- [ ] Duplicate `FILE_OFFER` → cached decision re-sent, user not re-prompted
-- [ ] Duplicate `CHUNK_DATA` → idempotent write
+- [x] `TRANSFER_CANCEL` from either side (second cancel is a no-op)
+- [x] `TRANSFER_ERROR` + the stable error vocabulary (enums + short details, never stack traces)
+- [x] Timeout contracts as configurable policy objects
+- [x] Duplicate `FILE_OFFER` → cached decision re-sent, user not re-prompted
+- [x] Duplicate `CHUNK_DATA` → idempotent write
 
 ### Protocol Test Suite
 

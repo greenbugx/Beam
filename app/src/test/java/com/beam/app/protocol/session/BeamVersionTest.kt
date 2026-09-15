@@ -9,8 +9,8 @@ import org.junit.Test
 class BeamVersionTest {
     @Test
     fun `parses valid versions`() {
-        assertEquals(1 to 0, BeamVersion.parse("BEAM/1.0"))
-        assertEquals(12 to 34, BeamVersion.parse("BEAM/12.34"))
+        assertEquals(BeamVersion.parse("BEAM/1.0"), 1 to 0)
+        assertEquals(BeamVersion.parse("BEAM/12.34"), 12 to 34)
     }
 
     @Test
@@ -68,5 +68,15 @@ class MessageIdTest {
         assertFalse(tracker.isDuplicate("0"))
         // Recent mids still are.
         assertTrue(tracker.isDuplicate("9"))
+    }
+
+    @Test
+    fun `tracker keeps the Section 25 recent window of 64 mids`() {
+        val tracker = MidTracker()
+        repeat(64) { assertFalse(tracker.isDuplicate(it.toString())) }
+        assertTrue(tracker.isDuplicate("0"))
+        assertFalse(tracker.isDuplicate("64")) // new mid evicts the oldest
+        assertFalse(tracker.isDuplicate("0"))
+        assertTrue(tracker.isDuplicate("64"))
     }
 }

@@ -20,6 +20,7 @@ class ChunkReceiver(
     private val plan = ChunkPlan(metadata.sizeBytes, metadata.chunkSize)
     private val transferUuid = UUID.fromString(metadata.transferId)
     private val ranges = RangeTracker()
+    private val sidecar = RangesSidecar(tempDir, metadata.transferId)
 
     val state = TransferStateMachine(TransferPhase.Accepted)
 
@@ -114,6 +115,7 @@ class ChunkReceiver(
             ReceiveEndStatus.READY_TO_VERIFY
         } else {
             state.on(TransferEvent.FatalError(TransferError(TransferErrorCode.INTERNAL_ERROR)))
+            sidecar.delete()
             ReceiveEndStatus.INCOMPLETE
         }
     }
@@ -130,6 +132,7 @@ class ChunkReceiver(
         if (!transitioned) return
         abandon()
         partFile.delete()
+        sidecar.delete()
         runCatching {
             wire.sendCancel(TransferCancelBody(metadata.transferId, error.code, error.detail.ifBlank { null }))
         }
@@ -159,6 +162,7 @@ class ChunkReceiver(
         if (!transitioned) return
         abandon()
         partFile.delete()
+        sidecar.delete()
     }
 
     /** Releases the temp file without deleting it. */
@@ -168,6 +172,7 @@ class ChunkReceiver(
     }
 
     private suspend fun sendAck() {
+        sidecar.flush(ranges.coalescedRanges())
         val body =
             ChunkAckBody(
                 transferId = metadata.transferId,

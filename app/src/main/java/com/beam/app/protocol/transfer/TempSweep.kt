@@ -9,8 +9,8 @@ class RangesSidecar(
     private val file: File
         get() = File(tempDir, "$transferId.ranges")
 
-    /** Flushes coalesced ranges to disk; 
-     * 
+    /** Flushes coalesced ranges to disk;
+     *
      * writes via temp-file + rename. */
     fun flush(ranges: List<LongRange>) {
         tempDir.mkdirs()
@@ -23,7 +23,7 @@ class RangesSidecar(
     }
 
     /** Parses a sidecar back into ranges; empty when absent;
-     * 
+     *
      * malformed lines are skipped. */
     fun read(): List<LongRange> {
         if (!file.exists()) return emptyList()

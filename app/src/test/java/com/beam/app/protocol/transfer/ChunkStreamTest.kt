@@ -12,6 +12,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -363,6 +364,7 @@ class ChunkTimeoutTest {
             acceptToStartMillis = 100,
             ackMillis = 100,
             verificationMillis = 100,
+            maxConsecutiveInactivity = 1,
         )
 
     @Test
@@ -415,4 +417,195 @@ class ChunkTimeoutTest {
             assertNull(wire.errorBody)
             job.cancel()
         }
+
+    @Test
+    fun `first inactivity expiry pauses the transfer and an ack resumes it`() =
+        runTest(timeout = 15.seconds) {
+            val pausePolicy =
+                TimeoutPolicy(
+                    transferInactivityMillis = 100,
+                    offerMillis = 100,
+                    acceptToStartMillis = 100,
+                    ackMillis = 100,
+                    verificationMillis = 100,
+                    maxConsecutiveInactivity = 3,
+                )
+            val metadata = testMetadata(sizeBytes = 10L * 256, chunkSize = 256)
+            val wire = RecordingWire()
+            val sender =
+                ChunkSender(
+                    metadata = metadata,
+                    openStream = { ByteArrayInputStream(sourceBytes(10)) },
+                    wire = wire,
+                    window = 1,
+                    timeouts = TransferTimeouts(pausePolicy),
+                )
+
+            val job = async { runCatching { sender.run() } }
+            runCurrent()
+            assertEquals(1, wire.chunks.size)
+
+            advanceTimeBy(100.milliseconds)
+            runCurrent()
+            assertEquals(TransferPhase.Paused, sender.state.phase)
+            assertNull(wire.errorBody)
+            assertTrue(job.isActive)
+
+            // ACK progress restores the link and streaming continues.
+            sender.onAck(ChunkAckBody(metadata.transferId, listOf(IndexRange(0, 0)), 0))
+            runCurrent()
+            assertEquals(TransferPhase.Transferring, sender.state.phase)
+            assertEquals(2, wire.chunks.size)
+
+            // Drain the rest to completion.
+            var ackedUpTo = 0L
+            while (!job.isCompleted && ackedUpTo < 9L) {
+                ackedUpTo++
+                sender.onAck(ChunkAckBody(metadata.transferId, listOf(IndexRange(0, ackedUpTo)), ackedUpTo))
+                runCurrent()
+            }
+            job.join()
+            assertEquals(10, wire.chunks.size)
+            assertTrue(wire.ended)
+        }
+
+    @Test
+    fun `three consecutive inactivity expiries fail the transfer`() =
+        runTest(timeout = 15.seconds) {
+            val pausePolicy =
+                TimeoutPolicy(
+                    transferInactivityMillis = 100,
+                    offerMillis = 100,
+                    acceptToStartMillis = 100,
+                    ackMillis = 100,
+                    verificationMillis = 100,
+                    maxConsecutiveInactivity = 3,
+                )
+            val metadata = testMetadata(sizeBytes = 10L * 256, chunkSize = 256)
+            val wire = RecordingWire()
+            val sender =
+                ChunkSender(
+                    metadata = metadata,
+                    openStream = { ByteArrayInputStream(sourceBytes(10)) },
+                    wire = wire,
+                    window = 1,
+                    timeouts = TransferTimeouts(pausePolicy),
+                )
+
+            val job = async { runCatching { sender.run() } }
+
+            repeat(3) {
+                advanceTimeBy(100.milliseconds)
+                runCurrent()
+            }
+
+            assertTrue(job.isCompleted)
+            assertEquals(TransferPhase.Failed, sender.state.phase)
+            assertEquals(TransferErrorCode.TRANSFER_TIMEOUT, wire.errorBody?.code)
+            assertTrue(job.await().exceptionOrNull() is TransferTimeoutException)
+        }
+}
+
+private fun newTempDir(): File =
+    File.createTempFile("beam", "test").apply {
+        delete()
+        mkdirs()
+    }
+
+class DuplicateHandlingTest {
+    @Test
+    fun `duplicate TRANSFER_START with same geometry is ignored`() =
+        runTest(timeout = 15.seconds) {
+            val metadata = testMetadata(sizeBytes = 2L * 256, chunkSize = 256)
+            val wire = PipedTransfer(metadata, newTempDir())
+            val start = TransferStartBody(metadata.transferId, 256, 2, 0)
+
+            wire.receiver.onStart(start)
+            val phaseAfterFirst = wire.receiver.state.phase
+            wire.receiver.onStart(start)
+
+            assertEquals(phaseAfterFirst, wire.receiver.state.phase)
+        }
+
+    @Test
+    fun `duplicate TRANSFER_START with different geometry is a protocol error`() =
+        runTest(timeout = 15.seconds) {
+            val metadata = testMetadata(sizeBytes = 2L * 256, chunkSize = 256)
+            val wire = PipedTransfer(metadata, newTempDir())
+
+            wire.receiver.onStart(TransferStartBody(metadata.transferId, 256, 2, 0))
+            try {
+                wire.receiver.onStart(TransferStartBody(metadata.transferId, 512, 1, 0))
+                fail("expected TransferProtocolException for geometry change")
+            } catch (expected: TransferProtocolException) {
+                // duplicate with different geometry is invalid.
+            }
+        }
+
+    @Test
+    fun `duplicate TRANSFER_END after completion is idempotent`() =
+        runTest(timeout = 15.seconds) {
+            val metadata = testMetadata(sizeBytes = 2L * 256, chunkSize = 256)
+            val wire = PipedTransfer(metadata, newTempDir())
+            val transferUuid = UUID.fromString(metadata.transferId)
+
+            wire.receiver.onStart(TransferStartBody(metadata.transferId, 256, 2, 0))
+            wire.receiver.onChunk(ChunkHeader(transferUuid, 0, 256), chunkPayload(0))
+            wire.receiver.onChunk(ChunkHeader(transferUuid, 1, 256), chunkPayload(1))
+
+            val end = TransferEndBody(metadata.transferId, 512)
+            assertEquals(ReceiveEndStatus.READY_TO_VERIFY, wire.receiver.onEnd(end))
+            assertEquals(ReceiveEndStatus.READY_TO_VERIFY, wire.receiver.onEnd(end))
+        }
+
+    @Test
+    fun `duplicate CHUNK_DATA does not double-count ranges`() =
+        runTest(timeout = 15.seconds) {
+            val metadata = testMetadata(sizeBytes = 2L * 256, chunkSize = 256)
+            val wire = PipedTransfer(metadata, newTempDir())
+            val transferUuid = UUID.fromString(metadata.transferId)
+
+            wire.receiver.onStart(TransferStartBody(metadata.transferId, 256, 2, 0))
+            wire.receiver.onChunk(ChunkHeader(transferUuid, 0, 256), chunkPayload(0))
+            wire.receiver.onChunk(ChunkHeader(transferUuid, 0, 256), chunkPayload(0)) // duplicate
+
+            assertEquals(listOf(0L..0L), wire.receiver.receivedRanges)
+
+            wire.receiver.onChunk(ChunkHeader(transferUuid, 1, 256), chunkPayload(1))
+            assertEquals(
+                ReceiveEndStatus.READY_TO_VERIFY,
+                wire.receiver.onEnd(TransferEndBody(metadata.transferId, 512)),
+            )
+        }
+}
+
+class OfferDecisionCacheTest {
+    @Test
+    fun `same offer id decides exactly once`() {
+        val cache = OfferDecisionCache()
+        var decideCalls = 0
+
+        val first =
+            cache.firstArrival("offer-1") {
+                decideCalls++
+                OfferDecisionCache.Decision.ACCEPTED
+            }
+        val second =
+            cache.firstArrival("offer-1") {
+                decideCalls++
+                OfferDecisionCache.Decision.REJECTED
+            }
+
+        assertEquals(OfferDecisionCache.Decision.ACCEPTED, first)
+        assertEquals(OfferDecisionCache.Decision.ACCEPTED, second)
+        assertEquals(1, decideCalls)
+    }
+
+    @Test
+    fun `recorded decision is readable afterwards`() {
+        val cache = OfferDecisionCache()
+        assertNull(cache.decisionFor("offer-2"))
+        cache.record("offer-2", OfferDecisionCache.Decision.REJECTED)
+        assertEquals(OfferDecisionCache.Decision.REJECTED, cache.decisionFor("offer-2"))
+    }
 }
