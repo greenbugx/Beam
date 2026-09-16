@@ -16,6 +16,7 @@ class TransferCompleter(
     private val wire: TransferWire,
     private val sidecar: RangesSidecar = RangesSidecar(tempDir, metadata.transferId),
     private val timeouts: TransferTimeouts = TransferTimeouts(),
+    private val state: TransferStateMachine? = null,
 ) {
     var destinationUsed: File? = null
         private set
@@ -44,12 +45,14 @@ class TransferCompleter(
                 }
             if (actual == metadata.sha256) {
                 publish(destination)
+                confirm(TransferEvent.HashMatched)
                 wire.sendVerified(TransferVerifiedBody(metadata.transferId, metadata.sha256))
                 sidecar.delete()
                 CompletionStatus.PUBLISHED
             } else {
                 deleteTemp()
                 sidecar.delete()
+                confirm(TransferEvent.HashMismatched)
                 wire.sendVerifyFailed(
                     VerifyFailedBody(metadata.transferId, metadata.sha256, actual),
                 )
@@ -67,6 +70,10 @@ class TransferCompleter(
     fun cleanup() {
         deleteTemp()
         sidecar.delete()
+    }
+
+    private fun confirm(event: TransferEvent) {
+        runCatching { state?.on(event) }
     }
 
     private fun publish(destination: File) {

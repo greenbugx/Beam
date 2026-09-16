@@ -25,6 +25,11 @@ object TransferMessageTypes {
     const val END = "TRANSFER_END"
     const val VERIFIED = "TRANSFER_VERIFIED"
     const val VERIFY_FAILED = "VERIFY_FAILED"
+    const val ERROR = "TRANSFER_ERROR"
+    const val CANCEL = "TRANSFER_CANCEL"
+
+    val ALL: Set<String> =
+        setOf(OFFER, ACCEPT, REJECT, START, ACK, END, VERIFIED, VERIFY_FAILED, ERROR, CANCEL)
 }
 
 /** Reasons carried by FILE_REJECT. */
@@ -174,6 +179,12 @@ internal fun TransferVerifiedBody.toJsonElement(): JsonElement =
 
 internal fun VerifyFailedBody.toJsonElement(): JsonElement =
     transferJson.encodeToJsonElement(VerifyFailedBody.serializer(), this)
+
+internal fun TransferErrorBody.toJsonElement(): JsonElement =
+    transferJson.encodeToJsonElement(TransferErrorBody.serializer(), this)
+
+internal fun TransferCancelBody.toJsonElement(): JsonElement =
+    transferJson.encodeToJsonElement(TransferCancelBody.serializer(), this)
 
 internal fun buildTransferEnvelope(
     type: String,

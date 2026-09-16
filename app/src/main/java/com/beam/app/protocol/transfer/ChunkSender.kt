@@ -95,6 +95,39 @@ class ChunkSender(
         windowReleased.trySend(Unit)
     }
 
+    suspend fun onVerified(body: TransferVerifiedBody) {
+        if (body.transferId != metadata.transferId) {
+            throw TransferProtocolException("VERIFIED for another transfer: ${body.transferId}")
+        }
+        if (state.isTerminal) return
+        if (body.sha256 != metadata.sha256) {
+            fail(TransferErrorCode.HASH_MISMATCH, "Receiver verified a different digest")
+            return
+        }
+        if (!transition(TransferEvent.HashMatched)) return
+        windowReleased.trySend(Unit)
+    }
+
+    suspend fun onVerifyFailed(body: VerifyFailedBody) {
+        if (body.transferId != metadata.transferId) {
+            throw TransferProtocolException("VERIFY_FAILED for another transfer: ${body.transferId}")
+        }
+        if (state.isTerminal) return
+        if (!transition(TransferEvent.HashMismatched)) return
+        windowReleased.trySend(Unit)
+    }
+
+    /** Applies [event]
+     *
+     * false when the state table has no such edge or the transfer is terminal. */
+    private fun transition(event: TransferEvent): Boolean =
+        try {
+            state.on(event)
+            true
+        } catch (e: IllegalTransferTransition) {
+            false
+        }
+
     private suspend fun sendAll() {
         wire.sendStart(
             TransferStartBody(

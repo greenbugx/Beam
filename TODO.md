@@ -113,12 +113,12 @@
 ### Protocol Test Suite
 
 - [x] Handshake happy path + version negotiation matrix
-- [ ] Offer/accept and offer/reject flows (no data after reject)
-- [ ] Full transfer: text file → `VERIFIED` → `COMPLETED` both sides
+- [x] Offer/accept and offer/reject flows (no data after reject)
+- [x] Full transfer: text file → `VERIFIED` → `COMPLETED` both sides
 - [x] Edge sizes: empty file, 1 byte, exactly one chunk, chunkSize, chunkSize + 1
-- [ ] Cancel at each state; connection loss at each state
-- [ ] Hash mismatch (flip one byte) → `VERIFY_FAILED`, temp deleted, session alive
-- [ ] Duplicate offer/chunk idempotency
+- [x] Cancel at each state; connection loss at each state
+- [x] Hash mismatch (flip one byte) → `VERIFY_FAILED`, temp deleted, session alive
+- [x] Duplicate offer/chunk idempotency
 - [x] Malformed frames → link policy
 
 ### On-Device Verification
