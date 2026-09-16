@@ -481,9 +481,15 @@ internal class TransferLink(
         stopReceiverWatchdog(transferId)
         senders[transferId]?.onPeerCancel(body)
         receivers[transferId]?.receiver?.onPeerCancel(body)
-        errors[transferId] = TransferError(body.code, body.detail ?: "Peer cancelled")
+        val error = TransferError(body.code, body.detail ?: "Peer cancelled")
+        if (!settled(transferId)) {
+            senders[transferId]?.terminate(error)
+            receivers[transferId]?.receiver?.terminate(error)
+        }
+        errors[transferId] = error
+        pendingOffers.remove(transferId)
+        cancelTimer(transferId)
         if (!hadEngine) {
-            pendingOffers.remove(transferId)
             decisions.record(transferId, OfferDecisionCache.Decision.REJECTED)
             phases[transferId] = TransferPhase.Cancelled
         }
@@ -498,9 +504,24 @@ internal class TransferLink(
         stopReceiverWatchdog(transferId)
         senders[transferId]?.onPeerError(body)
         receivers[transferId]?.receiver?.onPeerError(body)
-        errors[transferId] = TransferError(body.code, body.detail ?: "Peer reported an error")
+        val error = TransferError(body.code, body.detail ?: "Peer reported an error")
+        // Offered senders have no FatalError edge of their own
+        if (!settled(transferId)) {
+            senders[transferId]?.terminate(error)
+            receivers[transferId]?.receiver?.terminate(error)
+        }
+        errors[transferId] = error
+        if (pendingOffers.remove(transferId) != null) {
+            decisions.record(transferId, OfferDecisionCache.Decision.REJECTED)
+            phases[transferId] = TransferPhase.Failed
+        }
+        cancelTimer(transferId)
         syncPhase(transferId)
     }
+
+    private fun settled(transferId: String): Boolean =
+        senders[transferId]?.state?.isTerminal == true ||
+            receivers[transferId]?.receiver?.state?.isTerminal == true
 
     private suspend fun onLinkClosed() {
         if (closed) return

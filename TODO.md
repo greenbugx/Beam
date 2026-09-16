@@ -145,8 +145,8 @@
 - [x] Wake paused sender waiters on cancellation so source streams close promptly
 - [x] Guard accept-to-start timer installation/expiry against START arriving while ACCEPT is being sent
 - [x] Receiver inactivity watchdog: reset on progress, pause on expiry, fail and clean up after the configured limit
-- [ ] Review lifecycle serialization, cached rejection reasons, and terminal-message routing; add focused regression tests
-- [ ] Reconcile [Section 18](PROTOCOL.md#18-transfer-state-machine) exhaustive transitions with [Section 31](PROTOCOL.md#31-timeouts) required accept-to-start failure without editing the locked protocol
+- [x] Review lifecycle serialization, cached rejection reasons, and terminal-message routing; add focused regression tests
+- [x] Reconcile [Section 18](PROTOCOL.md#18-transfer-state-machine) exhaustive transitions with [Section 31](PROTOCOL.md#31-timeouts) required accept-to-start failure without editing the locked protocol
 
 ### Nearby Transport Adapter
 

@@ -79,6 +79,13 @@ class ChunkSender(
         }
     }
 
+    suspend fun terminate(error: TransferError) {
+        if (state.isTerminal) return
+        if (!transition(TransferEvent.FatalError(error))) return
+        windowReleased.trySend(Unit)
+        resumed.trySend(Unit)
+    }
+
     /** Applies a CHUNK_ACK from the receiver.
      *
      * Idempotent. */

@@ -149,6 +149,14 @@ class ChunkReceiver(
         }
     }
 
+    suspend fun terminate(error: TransferError) {
+        if (state.isTerminal) return
+        if (!transition(TransferEvent.FatalError(error))) return
+        abandon()
+        partFile.delete()
+        sidecar.delete()
+    }
+
     /** Applies TRANSFER_CANCEL from the peer. */
     suspend fun onPeerCancel(body: TransferCancelBody) {
         if (body.transferId != metadata.transferId) {

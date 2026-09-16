@@ -152,6 +152,7 @@ class TransferStateMachine(
                         is TransferEvent.FileRejected -> TransferPhase.Rejected
                         is TransferEvent.OfferExpired -> TransferPhase.Expired
                         is TransferEvent.CancelRequested -> TransferPhase.Cancelled
+                        is TransferEvent.FatalError -> TransferPhase.Failed
                         else -> null
                     }
                 }

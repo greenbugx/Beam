@@ -798,6 +798,73 @@ class ProtocolSuiteTest {
         }
 
     @Test
+    fun `peer cancel terminates a receiver still waiting to accept or verify`() =
+        runTest(timeout = 30.seconds) {
+            val sender = Peer("a", this, temp.newFolder())
+            val receiver = Peer("b", this, temp.newFolder())
+            connect(sender, receiver)
+            val metadata = metadataFor("accept.txt", textBytes, chunkSize = 64 * 1024)
+            val id = sender.manager.offer(metadata, source(textBytes), sender.linkId)
+            pump(sender, receiver, maxRounds = 1)
+            val wire = LinkTransferWire(receiver.session, id)
+            wire.sendAccept() // receiver never accepts
+            pump(sender, receiver, maxRounds = 1)
+            assertEquals(TransferPhase.Verifying, sender.phaseOf(id))
+            assertEquals(TransferPhase.Offered, receiver.phaseOf(id))
+
+            receiver.manager.cancel(id, TransferError(TransferErrorCode.TRANSFER_CANCELLED, "user left"))
+            pump(sender, receiver)
+            assertEquals(TransferPhase.Cancelled, receiver.phaseOf(id))
+            assertEquals(TransferPhase.Failed, sender.phaseOf(id))
+            assertEquals(TransferErrorCode.TRANSFER_CANCELLED, sender.errorCodeOf(id))
+            assertFalse(receiver.partFile(id).exists())
+            assertFalse(receiver.sidecarFile(id).exists())
+
+            val v = metadataFor("verify.txt", textBytes, chunkSize = 64 * 1024)
+            val vId = sender.manager.offer(v, source(textBytes), sender.linkId)
+            pump(sender, receiver, maxRounds = 1)
+            receiver.manager.accept(vId, receiver.destination(v.name))
+            val acceptIdx = receiver.transport.sent.lastIndex
+            sender.transport.receiveFrame(receiver.transport.sent[acceptIdx])
+            receiver.delivered = acceptIdx + 1
+            runCurrent()
+            assertEquals(TransferPhase.Verifying, sender.phaseOf(vId))
+            LinkTransferWire(receiver.session, vId).sendCancel(
+                com.beam.app.protocol.transfer.TransferCancelBody(
+                    vId,
+                    TransferErrorCode.TRANSFER_CANCELLED,
+                    "user left",
+                ),
+            )
+            pump(sender, receiver)
+            assertEquals(TransferPhase.Failed, sender.phaseOf(vId))
+            assertEquals(TransferErrorCode.TRANSFER_CANCELLED, sender.errorCodeOf(vId))
+            assertEquals(LinkState.Active, receiver.session.state.value)
+        }
+
+    @Test
+    fun `peer error on a pending offer settles it and routes to the offered sender`() =
+        runTest {
+            val sender = Peer("a", this, temp.newFolder())
+            val receiver = Peer("b", this, temp.newFolder())
+            connect(sender, receiver)
+            val metadata = metadataFor("err.txt", textBytes, chunkSize = 64 * 1024)
+            val id = sender.manager.offer(metadata, source(textBytes), sender.linkId)
+            pump(sender, receiver, maxRounds = 1)
+            assertEquals(TransferPhase.Offered, receiver.phaseOf(id))
+            receiver.manager.cancel(id, TransferError(TransferErrorCode.INTERNAL_ERROR, "receiver blew up"))
+            pump(sender, receiver)
+            assertEquals(TransferErrorCode.INTERNAL_ERROR, receiver.errorCodeOf(id))
+            assertEquals(TransferPhase.Cancelled, sender.phaseOf(id))
+            assertEquals(TransferErrorCode.INTERNAL_ERROR, sender.errorCodeOf(id))
+            val wire = LinkTransferWire(sender.session, id)
+            wire.sendAccept()
+            pump(sender, receiver, maxRounds = 1)
+            assertEquals(TransferPhase.Cancelled, sender.phaseOf(id))
+            assertEquals(LinkState.Active, receiver.session.state.value)
+        }
+
+    @Test
     fun `late controls cannot overwrite completed outcome or strike the link`() =
         runTest {
             val sender = Peer("a", this, temp.newFolder())
