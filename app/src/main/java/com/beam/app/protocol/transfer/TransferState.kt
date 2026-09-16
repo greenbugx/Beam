@@ -23,6 +23,19 @@ sealed interface TransferPhase {
     data object Failed : TransferPhase
 }
 
+val TransferPhase.isTerminal: Boolean
+    get() =
+        when (this) {
+            is TransferPhase.Completed,
+            is TransferPhase.Rejected,
+            is TransferPhase.Expired,
+            is TransferPhase.Cancelled,
+            is TransferPhase.Failed,
+            -> true
+
+            else -> false
+        }
+
 /** Stable error vocabulary carried by TRANSFER_ERROR / FILE_REJECT / SESSION_CLOSE. */
 enum class TransferErrorCode {
     INVALID_MESSAGE,
@@ -50,6 +63,7 @@ data class TimeoutPolicy(
     val maxConsecutiveInactivity: Int = 3,
     val ackMillis: Long = 15_000,
     val verificationMillis: Long = 120_000,
+    val reconnectWindowMillis: Long = 120_000,
 ) {
     init {
         require(handshakeMillis > 0 && offerMillis > 0 && acceptToStartMillis > 0) {
@@ -58,6 +72,7 @@ data class TimeoutPolicy(
         require(transferInactivityMillis > 0 && ackMillis > 0 && verificationMillis > 0) {
             "Timeouts must be positive"
         }
+        require(reconnectWindowMillis > 0) { "Reconnect window must be positive" }
         require(maxConsecutiveInactivity >= 1) { "maxConsecutiveInactivity must be >= 1" }
     }
 
@@ -121,17 +136,7 @@ class TransferStateMachine(
         private set
 
     val isTerminal: Boolean
-        get() =
-            when (phase) {
-                is TransferPhase.Completed,
-                is TransferPhase.Rejected,
-                is TransferPhase.Expired,
-                is TransferPhase.Cancelled,
-                is TransferPhase.Failed,
-                -> true
-
-                else -> false
-            }
+        get() = phase.isTerminal
 
     /**
      * Applies [event] and returns the new phase.
@@ -154,6 +159,7 @@ class TransferStateMachine(
                 is TransferPhase.Accepted -> {
                     when (event) {
                         is TransferEvent.TransferStarted -> TransferPhase.Transferring
+                        is TransferEvent.FatalError -> TransferPhase.Failed
                         else -> null
                     }
                 }

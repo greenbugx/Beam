@@ -1,6 +1,7 @@
 package com.beam.app.protocol.transfer
 
 import com.beam.app.protocol.ChunkHeader
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import java.io.InputStream
 import java.util.UUID
@@ -20,11 +21,18 @@ class ChunkSender(
     private val canceller = TransferCanceller()
 
     private val windowReleased = Channel<Unit>(Channel.CONFLATED)
+
+    private val resumed = Channel<Unit>(Channel.CONFLATED)
     private var sentCount = 0L
     private var inactivityStrikes = 0
 
+    private var linkDown = false
+
     var bytesSent = 0L
         private set
+
+    val bytesAcked: Long
+        get() = plan.bytesIn(acked.coalescedRanges())
 
     suspend fun run(): Long {
         try {
@@ -33,6 +41,8 @@ class ChunkSender(
             sendAll()
             state.on(TransferEvent.TransferEnded)
             return bytesSent
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: TransferCancelledException) {
             throw e
         } catch (e: TransferTimeoutException) {
@@ -62,6 +72,8 @@ class ChunkSender(
         if (!transitioned) return
         canceller.cancel(error)
         windowReleased.trySend(Unit)
+        // A link-loss pause between chunks waits on resumed, not the window.
+        resumed.trySend(Unit)
         runCatching {
             wire.sendCancel(TransferCancelBody(metadata.transferId, error.code, error.detail.ifBlank { null }))
         }
@@ -117,16 +129,45 @@ class ChunkSender(
         windowReleased.trySend(Unit)
     }
 
-    /** Applies [event]
-     *
-     * false when the state table has no such edge or the transfer is terminal. */
-    private fun transition(event: TransferEvent): Boolean =
-        try {
-            state.on(event)
-            true
-        } catch (e: IllegalTransferTransition) {
-            false
-        }
+    suspend fun onOfferRejected() {
+        if (state.phase !is TransferPhase.Offered) return
+        transition(TransferEvent.FileRejected)
+        windowReleased.trySend(Unit)
+    }
+
+    suspend fun onOfferExpired() {
+        if (state.phase !is TransferPhase.Offered) return
+        transition(TransferEvent.OfferExpired)
+        windowReleased.trySend(Unit)
+    }
+
+    suspend fun onLinkLost() {
+        linkDown = true
+        if (state.phase is TransferPhase.Transferring) transition(TransferEvent.LinkLost)
+        windowReleased.trySend(Unit)
+    }
+
+    suspend fun onLinkRestored() {
+        linkDown = false
+        if (state.phase is TransferPhase.Paused) transition(TransferEvent.LinkRestored)
+        windowReleased.trySend(Unit)
+        resumed.trySend(Unit)
+    }
+
+    suspend fun onReconnectWindowExpired() {
+        if (state.isTerminal) return
+        fail(TransferErrorCode.CONNECTION_LOST, "Link lost and the reconnect window elapsed")
+        windowReleased.trySend(Unit)
+    }
+
+    suspend fun onLocalFailure(
+        code: TransferErrorCode,
+        detail: String,
+    ) {
+        if (state.isTerminal) return
+        fail(code, detail)
+        windowReleased.trySend(Unit)
+    }
 
     private suspend fun sendAll() {
         wire.sendStart(
@@ -140,6 +181,7 @@ class ChunkSender(
         val chunkBuffer = ByteArray(metadata.chunkSize)
         openStream().use { stream ->
             for (index in 0L until plan.chunkCount) {
+                awaitResumeIfPaused()
                 if (state.phase != TransferPhase.Transferring) {
                     throw TransferCancelledException(TransferError(TransferErrorCode.TRANSFER_CANCELLED))
                 }
@@ -155,10 +197,29 @@ class ChunkSender(
         wire.sendEnd(TransferEndBody(metadata.transferId, bytesSent))
     }
 
+    private suspend fun awaitResumeIfPaused() {
+        while (state.phase is TransferPhase.Paused) {
+            resumed.receive()
+        }
+    }
+
+    /**
+     * Blocks while the flow-control window is full.
+     *
+     * while the peer is merely quiet we run the
+     * transfer-inactivity timer and pause (then fail) after consecutive expiries;
+     * while the link is known down we simply hold, because the reconnect window
+     * belongs to the layer that saw the loss.
+     */
     private suspend fun awaitWindowSlot() {
         while (sentCount - acked.receivedCount >= window) {
-            if (state.phase !is TransferPhase.Transferring && state.phase !is TransferPhase.Paused) {
+            val phase = state.phase
+            if (phase !is TransferPhase.Transferring && phase !is TransferPhase.Paused) {
                 throw TransferCancelledException(TransferError(TransferErrorCode.TRANSFER_CANCELLED))
+            }
+            if (linkDown) {
+                windowReleased.receive()
+                continue
             }
             try {
                 timeouts.inactivity("No ACK progress within inactivity window") {
@@ -185,6 +246,14 @@ class ChunkSender(
         }
     }
 
+    private fun transition(event: TransferEvent): Boolean =
+        try {
+            state.on(event)
+            true
+        } catch (e: IllegalTransferTransition) {
+            false
+        }
+
     /** Marks FAILED and reports TRANSFER_ERROR. */
     private suspend fun fail(
         code: TransferErrorCode,
@@ -199,6 +268,7 @@ class ChunkSender(
         runCatching {
             wire.sendError(TransferErrorBody(metadata.transferId, code, detail))
         }
+        resumed.trySend(Unit)
     }
 
     private fun readFully(

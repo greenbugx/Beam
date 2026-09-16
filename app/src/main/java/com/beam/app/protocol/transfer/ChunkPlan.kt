@@ -22,6 +22,23 @@ class ChunkPlan(
 
     fun isLastChunk(index: Long): Boolean = index == chunkCount - 1
 
+    /**
+     * Computed from run lengths so a 16 384-chunk range set costs a few
+     * iterations, not 16 384.
+     */
+    fun bytesIn(ranges: List<LongRange>): Long {
+        var total = 0L
+        for (range in ranges) {
+            val first = range.first.coerceIn(0, chunkCount - 1)
+            val last = range.last.coerceIn(0, chunkCount - 1)
+            if (last < first) continue
+            total += (last - first + 1) * chunkSize
+            // The final chunk is partial, so its length is not chunkSize.
+            if (last == chunkCount - 1) total -= (chunkSize - length(chunkCount - 1))
+        }
+        return total
+    }
+
     companion object {
         /** 8 chunks = 2 MiB at 256 KiB. */
         const val DEFAULT_WINDOW_CHUNKS = 8

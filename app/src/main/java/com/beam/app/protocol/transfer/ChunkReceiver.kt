@@ -30,6 +30,9 @@ class ChunkReceiver(
     val receivedRanges: List<LongRange>
         get() = ranges.coalescedRanges()
 
+    val bytesReceived: Long
+        get() = plan.bytesIn(ranges.coalescedRanges())
+
     private var file: RandomAccessFile? = null
     private var newSinceAck = 0
 
@@ -165,6 +168,52 @@ class ChunkReceiver(
         sidecar.delete()
     }
 
+    suspend fun onLinkLost() {
+        if (state.phase is TransferPhase.Transferring) transition(TransferEvent.LinkLost)
+    }
+
+    suspend fun onLinkRestored() {
+        if (state.phase is TransferPhase.Paused) transition(TransferEvent.LinkRestored)
+    }
+
+    suspend fun onReconnectWindowExpired() {
+        if (state.isTerminal) return
+        val detail = "Link lost and the reconnect window elapsed"
+        val failed = transition(TransferEvent.FatalError(TransferError(TransferErrorCode.CONNECTION_LOST, detail)))
+        if (!failed) return
+        abandon()
+        partFile.delete()
+        sidecar.delete()
+    }
+
+    suspend fun onAcceptToStartExpired() {
+        if (state.phase !is TransferPhase.Accepted) return
+        val detail = "No TRANSFER_START within the accept-to-start window"
+        val failed = transition(TransferEvent.FatalError(TransferError(TransferErrorCode.TRANSFER_TIMEOUT, detail)))
+        if (!failed) return
+        abandon()
+        partFile.delete()
+        sidecar.delete()
+        runCatching {
+            wire.sendError(TransferErrorBody(metadata.transferId, TransferErrorCode.TRANSFER_TIMEOUT, detail))
+        }
+    }
+
+    suspend fun onLocalFailure(
+        code: TransferErrorCode,
+        detail: String,
+    ) {
+        if (state.isTerminal) return
+        val failed = transition(TransferEvent.FatalError(TransferError(code, detail)))
+        if (!failed) return
+        abandon()
+        partFile.delete()
+        sidecar.delete()
+        runCatching {
+            wire.sendError(TransferErrorBody(metadata.transferId, code, detail))
+        }
+    }
+
     /** Releases the temp file without deleting it. */
     fun abandon() {
         runCatching { file?.syncAndClose() }
@@ -182,6 +231,14 @@ class ChunkReceiver(
         wire.sendAck(body)
         newSinceAck = 0
     }
+
+    private fun transition(event: TransferEvent): Boolean =
+        try {
+            state.on(event)
+            true
+        } catch (e: IllegalTransferTransition) {
+            false
+        }
 
     private fun RandomAccessFile.syncAndClose() {
         fd.sync()

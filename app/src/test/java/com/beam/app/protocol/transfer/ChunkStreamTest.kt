@@ -151,6 +151,24 @@ class ChunkStreamTest {
     val temp = TemporaryFolder()
 
     @Test
+    fun `stale accept-to-start expiry cannot fail a started receiver`() =
+        runTest {
+            val metadata = testMetadata(sizeBytes = 1, chunkSize = FileMetadata.MIN_CHUNK_SIZE_BYTES)
+            val wire = RecordingWire()
+            val receiver = ChunkReceiver(metadata, temp.newFolder(), wire)
+            try {
+                receiver.onStart(TransferStartBody(metadata.transferId, metadata.chunkSize, metadata.chunkCount, 0))
+                receiver.onAcceptToStartExpired()
+
+                assertEquals(TransferPhase.Transferring, receiver.state.phase)
+                assertTrue(receiver.partFile.exists())
+                assertEquals(null, wire.errorBody)
+            } finally {
+                receiver.abandon()
+            }
+        }
+
+    @Test
     fun `full transfer writes the file and acks on the cadence`() =
         runTest {
             val metadata = testMetadata(sizeBytes = 10L * 256, chunkSize = 256)

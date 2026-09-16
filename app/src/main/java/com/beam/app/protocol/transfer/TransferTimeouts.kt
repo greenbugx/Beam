@@ -18,6 +18,15 @@ class TransferTimeouts(
     /** Consecutive inactivity expiries a transfer may pause before failing. */
     val maxConsecutiveInactivity: Int get() = policy.maxConsecutiveInactivity
 
+    /** Offer window, both sides. */
+    val offerMillis: Long get() = policy.offerMillis
+
+    /** Accept-to-start gap, receiver side. */
+    val acceptToStartMillis: Long get() = policy.acceptToStartMillis
+
+    /** Reconnect/resume window after a link loss. */
+    val reconnectWindowMillis: Long get() = policy.reconnectWindowMillis
+
     /** Runs [block] under the [millis] budget; expiry raises [TransferTimeoutException]. */
     suspend fun <T> bounded(
         millis: Long,
@@ -42,7 +51,7 @@ class TransferTimeouts(
         block: suspend () -> T,
     ): T = bounded(policy.offerMillis, detail, block)
 
-    /** Accept→Start gap timer. */
+    /** Accept-to-start gap timer. */
     suspend fun <T> acceptToStart(
         detail: String,
         block: suspend () -> T,

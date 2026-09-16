@@ -121,6 +121,53 @@
 - [x] Duplicate offer/chunk idempotency
 - [x] Malformed frames → link policy
 
+### Protocol Wiring
+
+- [x] `LinkTransferWire`: `TransferWire` over `LinkSession` (CTRL envelopes + DATA frames)
+- [x] `TransferLink` per peer: routes session events into the transfer layer, tracks remote identity + negotiated capabilities
+- [x] `TransferManager`: user actions in (offer/accept/reject/cancel), one active transfer per link (`FILE_REJECT{BUSY}` otherwise)
+- [x] Offer decision via `OfferDecisionCache` (duplicate offer re-sends the cached decision, no re-prompt)
+- [x] Validation gate before prompting + filename sanitization
+- [x] Aggregated per-transfer state `Flow` for the UI (derived progress/speed/ETA, injectable `Clock`)
+- [x] `FileSource` interface: streaming read of the source, never a whole-file read
+- [x] Streamed SHA-256 for offer preparation
+- [x] Offer timeout on both sides (60 s → `FILE_REJECT{EXPIRED}` / `EXPIRED`)
+- [x] accept→start timer (10 s → `TRANSFER_ERROR{TRANSFER_TIMEOUT}` → FAILED)
+- [x] Link loss → `PAUSED`, then `FAILED` when the reconnect window expires; receiver temp survives the window
+- [x] `TempSweep` on manager init
+- [x] [Section 41](PROTOCOL.md#41-testing-strategy) suite repointed at production code + the two missing-state tests
+- [ ] [Section 40](PROTOCOL.md#40-logging) structured logging (events + redaction rules) — protocol emits, app renders
+
+#### M3.1 hardening remaining before transport integration
+
+- [x] Link/manager shutdown: stop routing/sender jobs and progress ticker; close receiver resources; test close/detach cleanup
+- [x] Incoming pending-offer cancel: remove the offer, notify the peer, preserve terminal/idempotent behavior, and release the link
+- [x] Wake paused sender waiters on cancellation so source streams close promptly
+- [ ] Guard accept-to-start timer installation/expiry against START arriving while ACCEPT is being sent
+- [ ] Receiver inactivity watchdog: reset on progress, pause on expiry, fail and clean up after the configured limit
+- [ ] Review lifecycle serialization, cached rejection reasons, and terminal-message routing; add focused regression tests
+- [ ] Reconcile [Section 18](PROTOCOL.md#18-transfer-state-machine) exhaustive transitions with [Section 31](PROTOCOL.md#31-timeouts) required accept-to-start failure without editing the locked protocol
+
+### Nearby Transport Adapter
+
+- [ ] `NearbyTransport`: `Transport` over one Nearby endpoint (one frame per payload)
+- [ ] `Frame.encode()` out; each full payload handed to the frame codec in
+- [ ] Malformed payload → `FrameMalformed` (link policy)
+- [ ] `onDisconnected` → `LinkLost`; `close()` → disconnect
+- [ ] Per-endpoint demux (one `Transport` per endpoint id)
+- [ ] Byte-link seam so the adapter logic is JVM-testable - the GMS binding stays a thin shell
+- [ ] Verify a 256 KiB + 28-byte BYTES payload on device
+
+### App Wiring
+
+- [ ] One `LinkSession` per connected endpoint
+- [ ] Offer prompt: accept / reject with a reason
+- [ ] Protocol state → `BeamTransfer` (real progress + speed; no dead UI fields)
+- [ ] `.beam-tmp` temp dir in app storage
+- [ ] Publish destination: app-scoped `Beam/` + collision-safe naming
+- [ ] Retire [M2](#m2--beam-sessions--connectivity-) ad-hoc text payloads in favor of `SESSION_*` envelopes
+- [ ] Cancel from both sides surfaced in the UI
+
 ### On-Device Verification
 
 - [ ] Transfer a small text file
