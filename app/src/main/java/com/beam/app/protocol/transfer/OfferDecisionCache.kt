@@ -8,21 +8,34 @@ class OfferDecisionCache {
         REJECTED,
     }
 
-    private val decisions = ConcurrentHashMap<String, Decision>()
+    private data class Entry(
+        val decision: Decision,
+        val rejectReason: RejectReason?,
+    )
+
+    private val decisions = ConcurrentHashMap<String, Entry>()
 
     fun firstArrival(
         offerId: String,
         decide: () -> Decision,
-    ): Decision? = decisions.computeIfAbsent(offerId) { decide() }
+    ): Decision? = decisions.computeIfAbsent(offerId) { entry(decide(), RejectReason.USER_REJECTED) }.decision
 
     /** Records the decision. */
     fun record(
         offerId: String,
         decision: Decision,
+        rejectReason: RejectReason = RejectReason.USER_REJECTED,
     ) {
-        decisions[offerId] = decision
+        decisions[offerId] = entry(decision, rejectReason)
     }
 
     /** Last-recorded decision for [offerId], if any. */
-    fun decisionFor(offerId: String): Decision? = decisions[offerId]
+    fun decisionFor(offerId: String): Decision? = decisions[offerId]?.decision
+
+    fun rejectionReasonFor(offerId: String): RejectReason? = decisions[offerId]?.rejectReason
+
+    private fun entry(
+        decision: Decision,
+        reason: RejectReason,
+    ): Entry = Entry(decision, reason.takeIf { decision == Decision.REJECTED })
 }

@@ -176,8 +176,10 @@ internal class TransferLink(
         wire.sendOffer(metadata)
         startTimer(metadata.transferId, timeouts.offerMillis) {
             sender.onOfferExpired()
-            errors[metadata.transferId] =
-                TransferError(TransferErrorCode.TRANSFER_TIMEOUT, "Offer window elapsed with no answer")
+            if (!sender.state.isTerminal) {
+                errors[metadata.transferId] =
+                    TransferError(TransferErrorCode.TRANSFER_TIMEOUT, "Offer window elapsed with no answer")
+            }
             syncPhase(metadata.transferId)
         }
         emit(metadata.transferId)
@@ -222,13 +224,13 @@ internal class TransferLink(
         transferId: String,
         reason: RejectReason,
     ) {
-        pendingOffers.remove(transferId)
+        if (pendingOffers.remove(transferId) == null) return
         cancelTimer(transferId)
-        decisions.record(transferId, OfferDecisionCache.Decision.REJECTED)
-        LinkTransferWire(session, transferId).sendReject(reason)
+        decisions.record(transferId, OfferDecisionCache.Decision.REJECTED, reason)
         phases[transferId] = TransferPhase.Rejected
         errors[transferId] = TransferError(errorCodeFor(reason), "Rejected: ${reason.name}")
         emit(transferId)
+        LinkTransferWire(session, transferId).sendReject(reason)
     }
 
     suspend fun cancel(
@@ -253,6 +255,7 @@ internal class TransferLink(
         receivers[transferId]?.receiver?.cancel(error)
         val phase = senders[transferId]?.state?.phase ?: receivers[transferId]?.receiver?.state?.phase
         if (phase != TransferPhase.Cancelled) return
+        pendingOffers.remove(transferId)
         cancelTimer(transferId)
         errors[transferId] = error
         syncPhase(transferId)
@@ -302,6 +305,7 @@ internal class TransferLink(
     private suspend fun handleControl(envelope: MessageEnvelope) {
         if (envelope.type !in TransferMessageTypes.ALL) return
         val transferId = envelope.transferId ?: return
+        if (envelope.type != TransferMessageTypes.OFFER && phases[transferId]?.isTerminal == true) return
         when (envelope.type) {
             TransferMessageTypes.OFFER -> {
                 handleOffer(envelope)
@@ -364,7 +368,7 @@ internal class TransferLink(
             if (cached == OfferDecisionCache.Decision.ACCEPTED) {
                 wire.sendAccept()
             } else {
-                wire.sendReject(RejectReason.USER_REJECTED)
+                wire.sendReject(checkNotNull(decisions.rejectionReasonFor(transferId)))
             }
             return
         }
@@ -397,7 +401,7 @@ internal class TransferLink(
         phases[transferId] = TransferPhase.Offered
         startTimer(transferId, timeouts.offerMillis) {
             if (pendingOffers.remove(transferId) != null) {
-                decisions.record(transferId, OfferDecisionCache.Decision.REJECTED)
+                decisions.record(transferId, OfferDecisionCache.Decision.REJECTED, RejectReason.EXPIRED)
                 LinkTransferWire(session, transferId).sendReject(RejectReason.EXPIRED)
                 phases[transferId] = TransferPhase.Expired
                 errors[transferId] =
@@ -414,7 +418,7 @@ internal class TransferLink(
         code: TransferErrorCode,
         detail: String,
     ) {
-        decisions.record(transferId, OfferDecisionCache.Decision.REJECTED)
+        decisions.record(transferId, OfferDecisionCache.Decision.REJECTED, reason)
         LinkTransferWire(session, transferId).sendReject(reason)
         phases[transferId] = TransferPhase.Rejected
         errors[transferId] = TransferError(code, detail)

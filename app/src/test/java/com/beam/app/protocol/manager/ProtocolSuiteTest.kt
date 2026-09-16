@@ -13,6 +13,7 @@ import com.beam.app.protocol.session.SessionCapabilities
 import com.beam.app.protocol.session.SessionRole
 import com.beam.app.protocol.transfer.CompletionStatus
 import com.beam.app.protocol.transfer.FileMetadata
+import com.beam.app.protocol.transfer.FileRejectBody
 import com.beam.app.protocol.transfer.RejectReason
 import com.beam.app.protocol.transfer.TimeoutPolicy
 import com.beam.app.protocol.transfer.TransferError
@@ -22,6 +23,7 @@ import com.beam.app.protocol.transfer.TransferPhase
 import com.beam.app.protocol.transfer.TransferProtocolException
 import com.beam.app.protocol.transfer.TransferStartBody
 import com.beam.app.protocol.transfer.TransferTimeouts
+import com.beam.app.protocol.transfer.decodeTransferBody
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
@@ -156,6 +158,10 @@ private suspend fun TestScope.pump(
 }
 
 class ProtocolSuiteTest {
+    private companion object {
+        const val REJECT_TYPE_MARKER = "\"type\":\"FILE_REJECT\""
+    }
+
     @get:Rule
     val temp = TemporaryFolder()
 
@@ -726,6 +732,128 @@ class ProtocolSuiteTest {
                     assertEquals(1, receiver.transferMessageTypes().count { it == TransferMessageTypes.ERROR })
                 }
             }
+        }
+
+    @Test
+    fun `duplicate rejected offer preserves original reason and terminal outcome`() =
+        runTest {
+            for (reason in RejectReason.entries) {
+                val sender = Peer("a", this, temp.newFolder())
+                val receiver = Peer("b", this, temp.newFolder())
+                connect(sender, receiver)
+                val metadata = metadataFor("reject.txt", textBytes, chunkSize = 64 * 1024)
+                val wire = LinkTransferWire(sender.session, metadata.transferId)
+                wire.sendOffer(metadata)
+                pump(sender, receiver)
+                receiver.manager.reject(metadata.transferId, reason)
+                pump(sender, receiver)
+                val before = receiver.snapshot(metadata.transferId)
+                wire.sendOffer(metadata)
+                pump(sender, receiver)
+                val reasons =
+                    receiver.transport.sent
+                        .filter { it.type == FrameType.CTRL }
+                        .map { MessageEnvelope.decode(it.payload.toString(Charsets.UTF_8)) }
+                        .filter { it.type == TransferMessageTypes.REJECT }
+                        .map { it.body.decodeTransferBody(FileRejectBody.serializer(), it.type).reason }
+                assertEquals(listOf(reason, reason), reasons)
+                assertEquals(before?.phase, receiver.phaseOf(metadata.transferId))
+                assertEquals(before?.error, receiver.snapshot(metadata.transferId)?.error)
+                assertFalse(receiver.partFile(metadata.transferId).exists())
+            }
+        }
+
+    @Test
+    fun `reject claims decision before suspended send and competing cancel cannot overwrite it`() =
+        runTest {
+            val release = CompletableDeferred<Unit>()
+            val transport =
+                FakeTransport { frame ->
+                    if (frame.type == FrameType.CTRL &&
+                        frame.payload.toString(Charsets.UTF_8).contains(REJECT_TYPE_MARKER)
+                    ) {
+                        release.await()
+                    }
+                }
+            val sender = Peer("a", this, temp.newFolder())
+            val receiver = Peer("b", this, temp.newFolder(), transport = transport)
+            connect(sender, receiver)
+            val metadata = metadataFor("reject.txt", textBytes, chunkSize = 64 * 1024)
+            val wire = LinkTransferWire(sender.session, metadata.transferId)
+            wire.sendOffer(metadata)
+            pump(sender, receiver)
+            val rejecting =
+                backgroundScope.launch {
+                    receiver.manager.reject(metadata.transferId, RejectReason.INSUFFICIENT_STORAGE)
+                }
+            runCurrent()
+            assertFalse(rejecting.isCompleted)
+            assertEquals(TransferPhase.Rejected, receiver.phaseOf(metadata.transferId))
+            receiver.manager.cancel(metadata.transferId)
+            release.complete(Unit)
+            rejecting.join()
+            receiver.manager.reject(metadata.transferId, RejectReason.USER_REJECTED)
+            assertEquals(TransferErrorCode.INSUFFICIENT_STORAGE, receiver.errorCodeOf(metadata.transferId))
+            assertEquals(listOf(TransferMessageTypes.REJECT), receiver.transferMessageTypes())
+        }
+
+    @Test
+    fun `late controls cannot overwrite completed outcome or strike the link`() =
+        runTest {
+            val sender = Peer("a", this, temp.newFolder())
+            val receiver = Peer("b", this, temp.newFolder())
+            connect(sender, receiver)
+            val metadata = metadataFor("done.txt", textBytes, chunkSize = 64 * 1024)
+            val id = sender.manager.offer(metadata, source(textBytes), sender.linkId)
+            pump(sender, receiver)
+            receiver.manager.accept(id, receiver.destination(metadata.name))
+            pump(sender, receiver)
+            assertEquals(TransferPhase.Completed, receiver.phaseOf(id))
+            for ((from, to) in listOf(sender to receiver, receiver to sender)) {
+                val wire = LinkTransferWire(from.session, id)
+                wire.sendError(
+                    com.beam.app.protocol.transfer
+                        .TransferErrorBody(id, TransferErrorCode.INTERNAL_ERROR),
+                )
+                wire.sendCancel(
+                    com.beam.app.protocol.transfer
+                        .TransferCancelBody(id, TransferErrorCode.TRANSFER_CANCELLED),
+                )
+                wire.sendReject(RejectReason.BUSY)
+                repeat(2) {
+                    wire.sendEnd(
+                        com.beam.app.protocol.transfer
+                            .TransferEndBody(id, metadata.sizeBytes),
+                    )
+                }
+                pump(sender, receiver)
+                assertEquals(TransferPhase.Completed, to.phaseOf(id))
+                assertNull(to.errorCodeOf(id))
+                assertEquals(LinkState.Active, to.session.state.value)
+            }
+            assertTrue(receiver.destination(metadata.name).readBytes().contentEquals(textBytes))
+            assertFalse(receiver.partFile(id).exists())
+            assertFalse(receiver.sidecarFile(id).exists())
+        }
+
+    @Test
+    fun `peer cancellation of offered sender survives its old offer deadline`() =
+        runTest {
+            val policy = TimeoutPolicy(offerMillis = 1_000)
+            val sender = Peer("a", this, temp.newFolder(), policy)
+            val receiver = Peer("b", this, temp.newFolder(), policy)
+            connect(sender, receiver)
+            val metadata = metadataFor("cancel.txt", textBytes, chunkSize = 64 * 1024)
+            val id = sender.manager.offer(metadata, source(textBytes), sender.linkId)
+            pump(sender, receiver)
+            receiver.manager.cancel(id)
+            pump(sender, receiver)
+            assertEquals(TransferPhase.Cancelled, sender.phaseOf(id))
+            val error = sender.snapshot(id)?.error
+            advanceTimeBy(2.seconds)
+            runCurrent()
+            assertEquals(error, sender.snapshot(id)?.error)
+            assertEquals(TransferErrorCode.TRANSFER_CANCELLED, sender.errorCodeOf(id))
         }
 
     private suspend fun TestScope.idleReceiver(
