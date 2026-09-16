@@ -637,6 +637,180 @@ class ProtocolSuiteTest {
             }
         }
 
+    private suspend fun TestScope.idleReceiver(
+        policy: TimeoutPolicy = TimeoutPolicy(transferInactivityMillis = 1_000),
+    ): Triple<Peer, Peer, FileMetadata> {
+        val sender = Peer("a", this, temp.newFolder(), policy)
+        val receiver = Peer("b", this, temp.newFolder(), policy)
+        connect(sender, receiver)
+        val metadata = metadataFor("idle.bin", ByteArray(8 * 64 * 1024), chunkSize = 64 * 1024)
+        val wire = LinkTransferWire(sender.session, metadata.transferId)
+        wire.sendOffer(metadata)
+        pump(sender, receiver)
+        receiver.manager.accept(metadata.transferId, receiver.destination(metadata.name))
+        pump(sender, receiver)
+        wire.sendStart(
+            com.beam.app.protocol.transfer.TransferStartBody(
+                metadata.transferId,
+                metadata.chunkSize,
+                metadata.chunkCount,
+                0,
+            ),
+        )
+        pump(sender, receiver)
+        return Triple(sender, receiver, metadata)
+    }
+
+    private suspend fun TestScope.deliverChunk(
+        sender: Peer,
+        receiver: Peer,
+        metadata: FileMetadata,
+        index: Long,
+    ) {
+        LinkTransferWire(sender.session, metadata.transferId).sendChunk(
+            com.beam.app.protocol
+                .ChunkHeader(UUID.fromString(metadata.transferId), index, metadata.chunkSize),
+            ByteArray(metadata.chunkSize),
+        )
+        pump(sender, receiver)
+    }
+
+    @Test
+    fun `receiver inactivity pauses then fails and cleans temps at configured limit`() =
+        runTest {
+            val (sender, receiver, metadata) = idleReceiver()
+            val id = metadata.transferId
+            repeat(4) { deliverChunk(sender, receiver, metadata, it.toLong()) }
+            assertTrue(receiver.sidecarFile(id).exists())
+            advanceTimeBy(999.milliseconds)
+            runCurrent()
+            assertEquals(TransferPhase.Transferring, receiver.phaseOf(id))
+            advanceTimeBy(1.milliseconds)
+            runCurrent()
+            assertEquals(TransferPhase.Paused, receiver.phaseOf(id))
+            assertEquals(TransferErrorCode.TRANSFER_TIMEOUT, receiver.errorCodeOf(id))
+            assertTrue(receiver.partFile(id).exists())
+            assertTrue(receiver.sidecarFile(id).exists())
+            advanceTimeBy(1.seconds)
+            runCurrent()
+            assertEquals(TransferPhase.Paused, receiver.phaseOf(id))
+            advanceTimeBy(1.seconds)
+            runCurrent()
+            assertEquals(TransferPhase.Failed, receiver.phaseOf(id))
+            assertFalse(receiver.partFile(id).exists())
+            assertFalse(receiver.sidecarFile(id).exists())
+            assertFalse(receiver.destination(metadata.name).exists())
+            assertEquals(1, receiver.transferMessageTypes().count { it == TransferMessageTypes.ERROR })
+            assertEquals(LinkState.Active, receiver.session.state.value)
+            advanceTimeBy(5.seconds)
+            runCurrent()
+            assertEquals(1, receiver.transferMessageTypes().count { it == TransferMessageTypes.ERROR })
+        }
+
+    @Test
+    fun `receiver inactivity is armed at START even if no first chunk arrives`() =
+        runTest {
+            val (_, receiver, metadata) =
+                idleReceiver(
+                    TimeoutPolicy(transferInactivityMillis = 750, maxConsecutiveInactivity = 1),
+                )
+            advanceTimeBy(749.milliseconds)
+            runCurrent()
+            assertEquals(TransferPhase.Transferring, receiver.phaseOf(metadata.transferId))
+            advanceTimeBy(1.milliseconds)
+            runCurrent()
+            assertEquals(TransferPhase.Failed, receiver.phaseOf(metadata.transferId))
+            assertFalse(receiver.partFile(metadata.transferId).exists())
+        }
+
+    @Test
+    fun `new receiver progress clears inactivity pause and resets consecutive expiries`() =
+        runTest {
+            val (sender, receiver, metadata) = idleReceiver()
+            val id = metadata.transferId
+            deliverChunk(sender, receiver, metadata, 0)
+            advanceTimeBy(2.seconds)
+            runCurrent()
+            assertEquals(TransferPhase.Paused, receiver.phaseOf(id))
+            deliverChunk(sender, receiver, metadata, 0)
+            assertEquals(TransferPhase.Paused, receiver.phaseOf(id))
+            deliverChunk(sender, receiver, metadata, 1)
+            assertEquals(TransferPhase.Transferring, receiver.phaseOf(id))
+            assertNull(receiver.errorCodeOf(id))
+            advanceTimeBy(999.milliseconds)
+            runCurrent()
+            assertEquals(TransferPhase.Transferring, receiver.phaseOf(id))
+            advanceTimeBy(1_001.milliseconds)
+            runCurrent()
+            assertEquals(TransferPhase.Paused, receiver.phaseOf(id))
+            advanceTimeBy(1.seconds)
+            runCurrent()
+            assertEquals(TransferPhase.Failed, receiver.phaseOf(id))
+        }
+
+    @Test
+    fun `duplicate chunks do not postpone receiver inactivity failure`() =
+        runTest {
+            val (sender, receiver, metadata) = idleReceiver()
+            deliverChunk(sender, receiver, metadata, 0)
+            repeat(3) {
+                advanceTimeBy(900.milliseconds)
+                runCurrent()
+                deliverChunk(sender, receiver, metadata, 0)
+            }
+            advanceTimeBy(300.milliseconds)
+            runCurrent()
+            assertEquals(TransferPhase.Failed, receiver.phaseOf(metadata.transferId))
+        }
+
+    @Test
+    fun `receiver watchdog stops on completion or cancellation`() =
+        runTest {
+            for (complete in listOf(true, false)) {
+                val (sender, receiver, metadata) = idleReceiver()
+                val id = metadata.transferId
+                if (complete) {
+                    repeat(8) { deliverChunk(sender, receiver, metadata, it.toLong()) }
+                    LinkTransferWire(sender.session, id).sendEnd(
+                        com.beam.app.protocol.transfer
+                            .TransferEndBody(id, metadata.sizeBytes),
+                    )
+                    pump(sender, receiver)
+                } else {
+                    receiver.manager.cancel(id)
+                }
+                val expected = if (complete) TransferPhase.Completed else TransferPhase.Cancelled
+                assertEquals(expected, receiver.phaseOf(id))
+                advanceTimeBy(5.seconds)
+                runCurrent()
+                assertEquals(expected, receiver.phaseOf(id))
+                assertEquals(0, receiver.transferMessageTypes().count { it == TransferMessageTypes.ERROR })
+                assertFalse(receiver.partFile(id).exists())
+            }
+        }
+
+    @Test
+    fun `real link loss replaces receiver inactivity with reconnect window`() =
+        runTest {
+            val (_, receiver, metadata) =
+                idleReceiver(
+                    TimeoutPolicy(transferInactivityMillis = 1_000, reconnectWindowMillis = 5_000),
+                )
+            advanceTimeBy(1.seconds)
+            runCurrent()
+            receiver.transport.receiveLinkLost()
+            runCurrent()
+            advanceTimeBy(3.seconds)
+            runCurrent()
+            assertEquals(TransferPhase.Paused, receiver.phaseOf(metadata.transferId))
+            assertTrue(receiver.partFile(metadata.transferId).exists())
+            advanceTimeBy(2.seconds)
+            runCurrent()
+            assertEquals(TransferPhase.Failed, receiver.phaseOf(metadata.transferId))
+            assertEquals(TransferErrorCode.CONNECTION_LOST, receiver.errorCodeOf(metadata.transferId))
+            assertFalse(receiver.partFile(metadata.transferId).exists())
+        }
+
     @Test
     fun `stale temps are swept when the manager starts`() =
         runTest(timeout = 30.seconds) {

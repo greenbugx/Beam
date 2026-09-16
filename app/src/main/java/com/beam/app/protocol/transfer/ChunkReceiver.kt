@@ -16,6 +16,7 @@ class ChunkReceiver(
     private val metadata: FileMetadata,
     private val tempDir: File,
     private val wire: TransferWire,
+    private val onProgress: () -> Unit = {},
 ) {
     private val plan = ChunkPlan(metadata.sizeBytes, metadata.chunkSize)
     private val transferUuid = UUID.fromString(metadata.transferId)
@@ -32,6 +33,8 @@ class ChunkReceiver(
 
     val bytesReceived: Long
         get() = plan.bytesIn(ranges.coalescedRanges())
+
+    private var inactivityPaused = false
 
     private var file: RandomAccessFile? = null
     private var newSinceAck = 0
@@ -75,7 +78,7 @@ class ChunkReceiver(
         header: ChunkHeader,
         payload: ByteArray,
     ) {
-        if (state.phase != TransferPhase.Transferring) {
+        if (state.phase != TransferPhase.Transferring && !(state.phase == TransferPhase.Paused && inactivityPaused)) {
             throw TransferProtocolException("CHUNK_DATA in phase ${state.phase::class.simpleName}")
         }
         if (header.transferId != transferUuid) {
@@ -95,6 +98,11 @@ class ChunkReceiver(
             throw TransferStorageException("Write failed at chunk ${header.chunkIndex}", e)
         }
         if (ranges.add(header.chunkIndex)) {
+            if (inactivityPaused) {
+                transition(TransferEvent.LinkRestored)
+                inactivityPaused = false
+            }
+            onProgress()
             newSinceAck++
             if (newSinceAck >= ChunkPlan.ACK_EVERY_N_CHUNKS) {
                 sendAck()
@@ -168,7 +176,14 @@ class ChunkReceiver(
         sidecar.delete()
     }
 
+    fun onInactivityExpired() {
+        if (state.phase is TransferPhase.Transferring) {
+            inactivityPaused = transition(TransferEvent.LinkLost)
+        }
+    }
+
     suspend fun onLinkLost() {
+        inactivityPaused = false
         if (state.phase is TransferPhase.Transferring) transition(TransferEvent.LinkLost)
     }
 

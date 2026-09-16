@@ -40,11 +40,13 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.time.Duration.Companion.milliseconds
 
 internal sealed interface LinkEvent {
     val linkId: String
@@ -78,6 +80,11 @@ internal class TransferLink(
     scope: CoroutineScope,
     private val onEvent: (LinkEvent) -> Unit,
 ) {
+    private class Watchdog(
+        val wake: Channel<Unit> = Channel(Channel.CONFLATED),
+        val job: Job,
+    )
+
     private val job = Job(scope.coroutineContext[Job])
     private val scope = CoroutineScope(scope.coroutineContext + job)
     private val senders = mutableMapOf<String, ChunkSender>()
@@ -87,6 +94,7 @@ internal class TransferLink(
     private val phases = mutableMapOf<String, TransferPhase>()
     private val errors = mutableMapOf<String, TransferError>()
     private val timers = mutableMapOf<String, Job>()
+    private val watchdogs = mutableMapOf<String, Watchdog>()
 
     private var capabilities: Set<String> = emptySet()
 
@@ -129,6 +137,7 @@ internal class TransferLink(
             }
             receivers.values.forEach { it.receiver.abandon() }
             timers.clear()
+            watchdogs.clear()
             senders.clear()
             receivers.clear()
             pendingOffers.clear()
@@ -185,7 +194,11 @@ internal class TransferLink(
         cancelTimer(transferId)
         decisions.record(transferId, OfferDecisionCache.Decision.ACCEPTED)
         val wire = LinkTransferWire(session, transferId)
-        val receiver = ChunkReceiver(metadata, tempDir, wire)
+        val receiver =
+            ChunkReceiver(metadata, tempDir, wire) {
+                errors.remove(transferId)
+                watchdogs[transferId]?.wake?.trySend(Unit)
+            }
         receivers[transferId] =
             ReceiverBundle(
                 receiver = receiver,
@@ -268,7 +281,12 @@ internal class TransferLink(
             is SessionEvent.ChunkReceived -> {
                 val transferId = event.header.transferId.toString()
                 val receiver = receivers[transferId]?.receiver
-                if (receiver != null && receiver.state.phase is TransferPhase.Transferring) {
+                if (receiver != null &&
+                    (
+                        receiver.state.phase is TransferPhase.Transferring ||
+                            (receiver.state.phase is TransferPhase.Paused && watchdogs.containsKey(transferId))
+                    )
+                ) {
                     receiver.onChunk(event.header, event.payload)
                     syncPhase(transferId)
                 }
@@ -428,6 +446,7 @@ internal class TransferLink(
         if (bundle.receiver.state.phase !is TransferPhase.Accepted) return
         bundle.receiver.onStart(envelope.body.decodeTransferBody(TransferStartBody.serializer(), envelope.type))
         cancelTimer(transferId)
+        startReceiverWatchdog(transferId)
         syncPhase(transferId)
     }
 
@@ -441,6 +460,7 @@ internal class TransferLink(
             syncPhase(transferId)
             return
         }
+        stopReceiverWatchdog(transferId)
         if (bundle.completer.complete(bundle.destination) == CompletionStatus.VERIFY_FAILED) {
             errors[transferId] = TransferError(TransferErrorCode.HASH_MISMATCH, "Verification failed")
         }
@@ -453,6 +473,7 @@ internal class TransferLink(
     ) {
         val body = envelope.body.decodeTransferBody(TransferCancelBody.serializer(), envelope.type)
         val hadEngine = senders.containsKey(transferId) || receivers.containsKey(transferId)
+        stopReceiverWatchdog(transferId)
         senders[transferId]?.onPeerCancel(body)
         receivers[transferId]?.receiver?.onPeerCancel(body)
         errors[transferId] = TransferError(body.code, body.detail ?: "Peer cancelled")
@@ -469,6 +490,7 @@ internal class TransferLink(
         transferId: String,
     ) {
         val body = envelope.body.decodeTransferBody(TransferErrorBody.serializer(), envelope.type)
+        stopReceiverWatchdog(transferId)
         senders[transferId]?.onPeerError(body)
         receivers[transferId]?.receiver?.onPeerError(body)
         errors[transferId] = TransferError(body.code, body.detail ?: "Peer reported an error")
@@ -478,6 +500,7 @@ internal class TransferLink(
     private suspend fun onLinkClosed() {
         if (closed) return
         for (transferId in activeTransferIds()) {
+            stopReceiverWatchdog(transferId)
             senders[transferId]?.onLinkLost()
             receivers[transferId]?.receiver?.onLinkLost()
             errors[transferId] = TransferError(TransferErrorCode.CONNECTION_LOST, "Link lost")
@@ -544,6 +567,50 @@ internal class TransferLink(
         }
     }
 
+    private fun startReceiverWatchdog(transferId: String) {
+        stopReceiverWatchdog(transferId)
+        val receiver = receivers[transferId]?.receiver ?: return
+        val wake = Channel<Unit>(Channel.CONFLATED)
+        val worker =
+            scope.launch(start = CoroutineStart.LAZY) {
+                var consecutiveExpiries = 0
+                while (receiver.state.phase == TransferPhase.Transferring ||
+                    receiver.state.phase == TransferPhase.Paused
+                ) {
+                    try {
+                        timeouts.inactivity("No receiver chunk progress") { wake.receive() }
+                        consecutiveExpiries = 0
+                    } catch (e: TransferTimeoutException) {
+                        // Progress queued at the deadline wins over a stale expiry.
+                        if (wake.tryReceive().isSuccess) {
+                            consecutiveExpiries = 0
+                            continue
+                        }
+                        if (receiver.state.isTerminal || receiver.state.phase == TransferPhase.Verifying) return@launch
+                        consecutiveExpiries++
+                        val detail =
+                            "No receiver chunk progress ($consecutiveExpiries consecutive inactivity expiries)"
+                        errors[transferId] = TransferError(TransferErrorCode.TRANSFER_TIMEOUT, detail)
+                        if (consecutiveExpiries >= timeouts.maxConsecutiveInactivity) {
+                            // Remove ownership before syncPhase so it does not cancel this error send.
+                            watchdogs.remove(transferId)
+                            receiver.onLocalFailure(TransferErrorCode.TRANSFER_TIMEOUT, detail)
+                            syncPhase(transferId)
+                            return@launch
+                        }
+                        receiver.onInactivityExpired()
+                        syncPhase(transferId)
+                    }
+                }
+            }
+        watchdogs[transferId] = Watchdog(wake, worker)
+        worker.start()
+    }
+
+    private fun stopReceiverWatchdog(transferId: String) {
+        watchdogs.remove(transferId)?.job?.cancel()
+    }
+
     private fun startTimer(
         transferId: String,
         millis: Long,
@@ -552,7 +619,7 @@ internal class TransferLink(
         timers.remove(transferId)?.cancel()
         timers[transferId] =
             scope.launch {
-                delay(millis)
+                delay(millis.milliseconds)
                 action()
                 timers.remove(transferId)
             }
@@ -565,6 +632,9 @@ internal class TransferLink(
     private fun syncPhase(transferId: String) {
         val enginePhase = senders[transferId]?.state?.phase ?: receivers[transferId]?.receiver?.state?.phase
         if (enginePhase != null) phases[transferId] = enginePhase
+        if (enginePhase?.isTerminal == true || enginePhase == TransferPhase.Verifying) {
+            stopReceiverWatchdog(transferId)
+        }
         emit(transferId)
     }
 
