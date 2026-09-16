@@ -4,7 +4,9 @@ import com.beam.app.protocol.Frame
 import com.beam.app.protocol.FrameCodecKind
 import kotlinx.coroutines.flow.MutableSharedFlow
 
-class FakeTransport : Transport {
+class FakeTransport(
+    private val afterSend: suspend (Frame) -> Unit = {},
+) : Transport {
     override val incoming = MutableSharedFlow<TransportEvent>(extraBufferCapacity = 4096)
     private val sendLog = mutableListOf<Frame>()
     var closed = false
@@ -14,6 +16,7 @@ class FakeTransport : Transport {
 
     override suspend fun send(frame: Frame) {
         sendLog += frame
+        afterSend(frame)
     }
 
     override fun close() {

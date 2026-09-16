@@ -207,6 +207,7 @@ internal class TransferLink(
             )
         phases[transferId] = TransferPhase.Accepted
         wire.sendAccept()
+        if (receiver.state.phase !is TransferPhase.Accepted) return
         startTimer(transferId, timeouts.acceptToStartMillis) {
             if (receiver.state.phase !is TransferPhase.Accepted) return@startTimer
             receiver.onAcceptToStartExpired()

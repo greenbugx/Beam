@@ -20,7 +20,10 @@ import com.beam.app.protocol.transfer.TransferErrorCode
 import com.beam.app.protocol.transfer.TransferMessageTypes
 import com.beam.app.protocol.transfer.TransferPhase
 import com.beam.app.protocol.transfer.TransferProtocolException
+import com.beam.app.protocol.transfer.TransferStartBody
 import com.beam.app.protocol.transfer.TransferTimeouts
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -69,9 +72,9 @@ private class Peer(
     scope: TestScope,
     val dir: File,
     policy: TimeoutPolicy = TimeoutPolicy(),
+    val transport: FakeTransport = FakeTransport(),
 ) {
     val linkId = "dev-$name"
-    val transport = FakeTransport()
     val session =
         LinkSession(
             transport = transport,
@@ -634,6 +637,94 @@ class ProtocolSuiteTest {
                 assertTrue(parent.isActive)
             } finally {
                 parent.cancel()
+            }
+        }
+
+    @Test
+    fun `START during suspended ACCEPT preserves watchdog and reconnect timers`() =
+        runTest {
+            for (loseLink in listOf(false, true)) {
+                val releaseAccept = CompletableDeferred<Unit>()
+                val acceptSent = CompletableDeferred<Unit>()
+                val transport =
+                    FakeTransport { frame ->
+                        val type =
+                            if (frame.type == FrameType.CTRL) {
+                                MessageEnvelope.decode(frame.payload.toString(Charsets.UTF_8)).type
+                            } else {
+                                null
+                            }
+                        if (type == TransferMessageTypes.ACCEPT) {
+                            acceptSent.complete(Unit)
+                            releaseAccept.await()
+                        }
+                    }
+                val policy =
+                    TimeoutPolicy(
+                        acceptToStartMillis = 100,
+                        transferInactivityMillis = 1_000,
+                        maxConsecutiveInactivity = 2,
+                        reconnectWindowMillis = 3_000,
+                    )
+                val sender = Peer("a", this, temp.newFolder(), policy)
+                val receiver = Peer("b", this, temp.newFolder(), policy, transport)
+                connect(sender, receiver)
+                val metadata = metadataFor("race.bin", ByteArray(64 * 1024), chunkSize = 64 * 1024)
+                val id = metadata.transferId
+                val wire = LinkTransferWire(sender.session, id)
+                wire.sendOffer(metadata)
+                pump(sender, receiver)
+                val accepting = launch { receiver.manager.accept(id, receiver.destination(metadata.name)) }
+                runCurrent()
+                assertTrue(acceptSent.isCompleted)
+                assertFalse(accepting.isCompleted)
+                pump(sender, receiver)
+                wire.sendStart(
+                    TransferStartBody(id, metadata.chunkSize, metadata.chunkCount, 0),
+                )
+                pump(sender, receiver)
+                assertEquals(TransferPhase.Transferring, receiver.phaseOf(id))
+                assertTrue(receiver.partFile(id).exists())
+                if (loseLink) {
+                    receiver.transport.receiveLinkLost()
+                    runCurrent()
+                    assertEquals(TransferPhase.Paused, receiver.phaseOf(id))
+                }
+                releaseAccept.complete(Unit)
+                accepting.join()
+                advanceTimeBy(100.milliseconds)
+                runCurrent()
+                assertEquals(
+                    if (loseLink) TransferPhase.Paused else TransferPhase.Transferring,
+                    receiver.phaseOf(id),
+                )
+                assertFalse(TransferMessageTypes.ERROR in receiver.transferMessageTypes())
+                advanceTimeBy(900.milliseconds)
+                runCurrent()
+                assertEquals(TransferPhase.Paused, receiver.phaseOf(id))
+                assertEquals(
+                    if (loseLink) TransferErrorCode.CONNECTION_LOST else TransferErrorCode.TRANSFER_TIMEOUT,
+                    receiver.errorCodeOf(id),
+                )
+                assertTrue(receiver.partFile(id).exists())
+                advanceTimeBy(1.seconds)
+                runCurrent()
+                assertEquals(if (loseLink) TransferPhase.Paused else TransferPhase.Failed, receiver.phaseOf(id))
+                if (loseLink) {
+                    advanceTimeBy(1.seconds)
+                    runCurrent()
+                }
+                assertEquals(TransferPhase.Failed, receiver.phaseOf(id))
+                assertFalse(receiver.partFile(id).exists())
+                assertFalse(receiver.sidecarFile(id).exists())
+                assertEquals(
+                    if (loseLink) TransferErrorCode.CONNECTION_LOST else TransferErrorCode.TRANSFER_TIMEOUT,
+                    receiver.errorCodeOf(id),
+                )
+                if (!loseLink) {
+                    assertEquals(LinkState.Active, receiver.session.state.value)
+                    assertEquals(1, receiver.transferMessageTypes().count { it == TransferMessageTypes.ERROR })
+                }
             }
         }
 
