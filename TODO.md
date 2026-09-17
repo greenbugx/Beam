@@ -150,13 +150,13 @@
 
 ### Nearby Transport Adapter
 
-- [ ] `NearbyTransport`: `Transport` over one Nearby endpoint (one frame per payload)
-- [ ] `Frame.encode()` out; each full payload handed to the frame codec in
-- [ ] Malformed payload → `FrameMalformed` (link policy)
-- [ ] `onDisconnected` → `LinkLost`; `close()` → disconnect
-- [ ] Per-endpoint demux (one `Transport` per endpoint id)
-- [ ] Byte-link seam so the adapter logic is JVM-testable - the GMS binding stays a thin shell
-- [ ] Verify a 256 KiB + 28-byte BYTES payload on device
+- [x] `NearbyTransport`: `Transport` over one Nearby endpoint (one frame per payload)
+- [x] `Frame.encode()` out; each full payload handed to the frame codec in
+- [x] Malformed payload → `FrameMalformed` (link policy)
+- [x] `onDisconnected` → `LinkLost`; `close()` → disconnect
+- [x] Per-endpoint demux (one `Transport` per endpoint id)
+- [x] Byte-link seam so the adapter logic is JVM-testable - the GMS binding stays a thin shell
+- [x] Verify a 256 KiB + 28-byte BYTES payload on device (worst-case 262,177 B = 256 KiB + 33 B frame+chunk headers round-tripped in both directions on two devices)
 
 ### App Wiring
 
