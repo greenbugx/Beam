@@ -144,7 +144,7 @@ fun beamRoomScreen(
 
                         BasicText(
                             text =
-                                "At least one device must join.",
+                                "Atleast one device must join to start the Beam.",
                             style =
                                 BeamTheme.typography.Small.copy(
                                     color = palette.textMuted,

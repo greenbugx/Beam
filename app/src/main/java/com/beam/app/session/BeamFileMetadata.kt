@@ -17,19 +17,38 @@ object BeamFileMetadata {
     fun read(
         contentResolver: ContentResolver,
         uri: Uri,
-    ): BeamSelectedFile =
-        BeamSelectedFile(
+    ): BeamSelectedFile {
+        val mimeType = readMimeType(contentResolver, uri)
+        return BeamSelectedFile(
             id = UUID.randomUUID().toString(),
             uri = uri,
-            name = readName(contentResolver, uri),
-            mimeType = readMimeType(contentResolver, uri),
+            name = readName(contentResolver, uri, mimeType),
+            mimeType = mimeType,
             sizeBytes = readSizeBytes(contentResolver, uri),
         )
+    }
 
     private fun readName(
         contentResolver: ContentResolver,
         uri: Uri,
-    ): String = queryDisplayName(contentResolver, uri) ?: uri.lastPathSegment ?: "file"
+        mimeType: String?,
+    ): String {
+        val raw =
+            queryDisplayName(contentResolver, uri)
+                ?: uri.lastPathSegment
+                ?: "file"
+
+        val stem = raw.trimEnd('.').ifBlank { "file" }
+        val hasExtension = stem.substringAfterLast('.', "").isNotBlank()
+        if (hasExtension) return raw
+
+        return MimeTypeMap
+            .getSingleton()
+            .getExtensionFromMimeType(mimeType?.substringBefore(';'))
+            ?.takeIf { it.isNotBlank() }
+            ?.let { "$stem.$it" }
+            ?: raw
+    }
 
     private fun readMimeType(
         contentResolver: ContentResolver,

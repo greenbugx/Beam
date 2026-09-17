@@ -55,6 +55,7 @@
 - [x] Read MIME type
 - [x] Read file size
 - [x] Store/access selected `Uri`
+- [x] Restore a missing extension from the MIME type (SAF providers that hand out extension-less display names)
 
 ### Wire Codec
 
@@ -160,36 +161,36 @@
 
 ### App Wiring
 
-- [ ] One `LinkSession` per connected endpoint
-- [ ] Offer prompt: accept / reject with a reason
-- [ ] Protocol state → `BeamTransfer` (real progress + speed; no dead UI fields)
-- [ ] `.beam-tmp` temp dir in app storage
-- [ ] Publish destination: app-scoped `Beam/` + collision-safe naming
+- [x] One `LinkSession` per connected endpoint (HELLO/READY round-trip verified on two devices; `sessionId` = `BS-<beamCode>` on both sides)
+- [x] Offer prompt: accept / reject with a reason (dialog on Offered snapshot; accept publishes to app-scoped Beam/ with collision-safe naming, reject sends USER_REJECTED)
+- [x] Protocol state → `BeamTransfer` (real progress + speed from `TransferManager.transfers` snapshots)
+- [x] `.beam-tmp` temp dir in app storage (`cacheDir/beam-tmp` handed to `TransferManager` on attach)
+- [x] Publish destination: app-scoped `Beam/` + collision-safe naming (`publishDestination`)
 - [ ] Retire [M2](#m2--beam-sessions--connectivity-) ad-hoc text payloads in favor of `SESSION_*` envelopes
 - [ ] Cancel from both sides surfaced in the UI
 
 ### On-Device Verification
 
-- [ ] Transfer a small text file
-- [ ] Transfer an image
-- [ ] Transfer a video
-- [ ] Transfer a large file
-- [ ] Calculate SHA-256
-- [ ] Verify received file integrity
+- [x] Transfer a small text file
+- [x] Transfer an image
+- [x] Transfer a video
+- [x] Transfer a large file
+- [x] Calculate SHA-256 (sender hashes at offer time; no offer can be built without it)
+- [x] Verify received file integrity
 
 ---
 
 # M4 — Large File Transfer
 
-- [ ] Buffered streaming
-- [ ] Prevent loading entire files into RAM
-- [ ] Chunk-based transfer
+- [x] Buffered streaming
+- [x] Prevent loading entire files into RAM
+- [x] Chunk-based transfer
 - [ ] Chunk size / buffer tuning
-- [ ] Transfer progress calculation
-- [ ] Transfer speed calculation
-- [ ] ETA calculation
-- [ ] Cancellation
-- [ ] Failure recovery
+- [x] Transfer progress calculation
+- [x] Transfer speed calculation
+- [x] ETA calculation (in `TransferSnapshot.etaSeconds`. Not yet surfaced in the transfer row)
+- [x] Cancellation
+- [ ] Failure recovery — link loss pauses, then fails after the reconnect window
 - [ ] Test 1 GB+ files
 - [ ] Test 5 GB+ files
 - [ ] Sustained transfer testing

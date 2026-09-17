@@ -34,6 +34,15 @@ data class SharedFile(
     val senderName: String,
 )
 
+/** An offered file from a peer, awaiting the user's accept/reject decision. */
+data class BeamIncomingOffer(
+    val transferId: String,
+    val fileName: String,
+    val sizeBytes: Long,
+    val mimeType: String? = null,
+    val peerLabel: String = "",
+)
+
 data class BeamTransfer(
     val id: String,
     val fileName: String,
@@ -54,6 +63,8 @@ data class BeamFilesUiState(
     val sharedFiles: List<SharedFile> = emptyList(),
     val outgoingTransfers: List<BeamTransfer> = emptyList(),
     val incomingTransfers: List<BeamTransfer> = emptyList(),
+    /** Non-null while an offered file waits for the user's decision. */
+    val incomingOffer: BeamIncomingOffer? = null,
     val selectedFileIds: Set<String> = emptySet(),
     val isLoading: Boolean = false,
     val error: String? = null,

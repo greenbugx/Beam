@@ -13,11 +13,14 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -26,8 +29,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import com.beam.app.session.BeamFilesUiState
+import com.beam.app.session.BeamIncomingOffer
 import com.beam.app.ui.components.BeamButtonStyle
 import com.beam.app.ui.components.beamAddFilesButton
 import com.beam.app.ui.components.beamBrandMark
@@ -46,10 +53,20 @@ fun beamFilesScreen(
     state: BeamFilesUiState,
     onAddFiles: () -> Unit,
     onLeaveBeam: () -> Unit,
+    onAcceptOffer: (BeamIncomingOffer) -> Unit,
+    onRejectOffer: (BeamIncomingOffer) -> Unit,
 ) {
     val palette = BeamTheme.palette
     val statusBarPadding = WindowInsets.statusBars.asPaddingValues()
     val navigationBarPadding = WindowInsets.navigationBars.asPaddingValues()
+
+    state.incomingOffer?.let { offer ->
+        beamOfferDialog(
+            offer = offer,
+            onAccept = { onAcceptOffer(offer) },
+            onReject = { onRejectOffer(offer) },
+        )
+    }
 
     LazyColumn(
         modifier =
@@ -233,3 +250,75 @@ private fun beamAppearIn(content: @Composable () -> Unit) {
         content()
     }
 }
+
+/** Accept/reject prompt for an offered file, shown while its offer is pending. */
+@Composable
+private fun beamOfferDialog(
+    offer: BeamIncomingOffer,
+    onAccept: () -> Unit,
+    onReject: () -> Unit,
+) {
+    val palette = BeamTheme.palette
+
+    Dialog(onDismissRequest = onReject) {
+        Box(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(palette.surfaceElevated),
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+            ) {
+                beamSectionLabel("INCOMING FILE")
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                BasicText(
+                    text = offer.fileName,
+                    style =
+                        BeamTheme.typography.Hero.copy(
+                            color = palette.textPrimary,
+                        ),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                BasicText(
+                    text = "${formatBytes(offer.sizeBytes)} · from ${offer.peerLabel}",
+                    style =
+                        BeamTheme.typography.Small.copy(
+                            color = palette.textMuted,
+                        ),
+                )
+
+                Spacer(modifier = Modifier.height(22.dp))
+
+                beamButton(
+                    text = "ACCEPT",
+                    onClick = onAccept,
+                    style = BeamButtonStyle.Primary,
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                beamButton(
+                    text = "DECLINE",
+                    onClick = onReject,
+                    style = BeamButtonStyle.Secondary,
+                )
+            }
+        }
+    }
+}
+
+/** Human-readable byte size for the offer prompt. */
+private fun formatBytes(bytes: Long): String =
+    when {
+        bytes >= 1_048_576L -> "%.1f MB".format(bytes / 1_048_576f)
+        bytes >= 1_024L -> "%.1f KB".format(bytes / 1_024f)
+        else -> "$bytes B"
+    }

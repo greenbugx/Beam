@@ -2,6 +2,7 @@ package com.beam.app.network
 
 import com.beam.app.protocol.session.NearbyByteLink
 import com.beam.app.protocol.session.NearbyLinkHub
+import com.beam.app.protocol.session.NearbyTransport
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 
@@ -35,10 +36,10 @@ class NearbyTransportBinding(
         }
     }
 
-    /** Wires a newly connected endpoint into the hub which is safe to re-invoke. */
-    fun onEndpointConnected(endpointId: String) {
+    /** Wires a newly connected endpoint into the hub and returns its transport. */
+    fun onEndpointConnected(endpointId: String): NearbyTransport {
         val current = link ?: GmsByteLink().also { link = it }
-        hub.transportFor(endpointId, current, scope)
+        return hub.transportFor(endpointId, current, scope)
     }
 
     /** Routes one inbound wire buffer to the endpoint's transport. */

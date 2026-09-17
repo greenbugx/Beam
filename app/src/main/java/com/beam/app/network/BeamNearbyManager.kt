@@ -19,14 +19,6 @@ import com.google.android.gms.nearby.connection.Strategy
 class BeamNearbyManager(
     context: Context,
 ) {
-    companion object {
-        private const val TAG = "BeamNearby"
-
-        const val SERVICE_ID = "com.beam.app"
-
-        private val STRATEGY = Strategy.P2P_CLUSTER
-    }
-
     private val connectionsClient =
         Nearby.getConnectionsClient(context.applicationContext)
 
@@ -59,8 +51,16 @@ class BeamNearbyManager(
                     "Bytes payload received from $endpointId (${bytes.size} bytes)",
                 )
 
-                onBytesReceived?.invoke(endpointId, bytes)
-                onMessageReceived?.invoke(endpointId, bytes.decodeToString())
+                // TEMPORARY: legacy "BEAM:*" text signals are not
+                // protocol frames, so route them to the text listener only and
+                // keep the protocol transport free of malformed strikes.
+                // Remove when the text path is retired for SESSION_*.
+                if (bytes.isLegacyTextSignal()) {
+                    onMessageReceived?.invoke(endpointId, bytes.decodeToString())
+                } else {
+                    onBytesReceived?.invoke(endpointId, bytes)
+                    onMessageReceived?.invoke(endpointId, bytes.decodeToString())
+                }
             }
 
             override fun onPayloadTransferUpdate(
@@ -247,5 +247,21 @@ class BeamNearbyManager(
         connectionsClient.stopAdvertising()
         connectionsClient.stopDiscovery()
         connectionsClient.stopAllEndpoints()
+    }
+
+    /**
+     * TEMPORARY: true for the legacy "BEAM:*" text signals.
+     * A real protocol frame always begins with a 4-byte big-endian length whose
+     * first byte is 0x00, so any buffer starting 'B' (0x42) is legacy text.
+     * Remove when the text path is retired for SESSION_*.
+     */
+    private fun ByteArray.isLegacyTextSignal(): Boolean = isNotEmpty() && this[0] == 'B'.code.toByte()
+
+    companion object {
+        private const val TAG = "BeamNearby"
+
+        const val SERVICE_ID = "com.beam.app"
+
+        private val STRATEGY = Strategy.P2P_CLUSTER
     }
 }
