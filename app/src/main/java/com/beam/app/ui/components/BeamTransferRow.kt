@@ -3,6 +3,8 @@ package com.beam.app.ui.components
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -13,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -32,10 +35,17 @@ import com.beam.app.util.BeamFormat
 fun beamTransferRow(
     transfer: BeamTransfer,
     modifier: Modifier = Modifier,
+    onCancel: (() -> Unit)? = null,
 ) {
     val palette = BeamTheme.palette
 
     val active = transfer.status == BeamTransferStatus.Active
+
+    val cancellable =
+        transfer.status == BeamTransferStatus.Active ||
+            transfer.status == BeamTransferStatus.Paused
+
+    val cancelInteractionSource = remember { MutableInteractionSource() }
 
     val progress by animateFloatAsState(
         targetValue = transfer.progressFraction.coerceIn(0f, 1f),
@@ -102,6 +112,24 @@ fun beamTransferRow(
                     style =
                         BeamTheme.typography.Small.copy(
                             color = palette.textPrimary,
+                        ),
+                )
+            }
+
+            if (cancellable && onCancel != null) {
+                BasicText(
+                    text = "CANCEL",
+                    modifier =
+                        Modifier
+                            .padding(start = 14.dp)
+                            .clickable(
+                                interactionSource = cancelInteractionSource,
+                                indication = null,
+                                onClick = onCancel,
+                            ),
+                    style =
+                        BeamTheme.typography.SectionLabel.copy(
+                            color = palette.textMuted,
                         ),
                 )
             }

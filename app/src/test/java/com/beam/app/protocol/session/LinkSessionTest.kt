@@ -85,6 +85,15 @@ private fun TestPeer.startSession(scope: TestScope) {
     scope.runCurrent()
 }
 
+private fun startEnvelope(messageId: String = "00000009"): MessageEnvelope =
+    buildSessionEnvelope(
+        type = SessionMessageTypes.START,
+        sessionId = SESSION_ID,
+        deviceId = "dev-host",
+        messageId = messageId,
+        body = SessionStartBody().toJsonElement(),
+    )
+
 private fun Frame.typeName(): String = MessageEnvelope.decode(payload.toString(Charsets.UTF_8)).type
 
 /** Runs one full simultaneous HELLO/READY exchange between two fresh peers. */
@@ -119,7 +128,7 @@ class LinkSessionTest {
             assertEquals(LinkState.Active, host.session.state.value)
 
             val joinerCompleted = joiner.events.filterIsInstance<SessionEvent.HandshakeCompleted>().single()
-            assertEquals("BEAM/1.0", joinerCompleted.agreedVersion)
+            assertEquals("BEAM/1.1", joinerCompleted.agreedVersion)
             assertEquals("dev-host", joinerCompleted.remote.deviceId)
             assertEquals(SessionRole.HOST, joinerCompleted.remote.role)
             assertEquals(setOf(SessionCapabilities.CHUNKING), joinerCompleted.negotiatedCapabilities)
@@ -157,7 +166,7 @@ class LinkSessionTest {
         runTest {
             val agreed =
                 BeamVersion.negotiate(
-                    local = listOf("BEAM/1.0", "BEAM/2.1"),
+                    local = listOf("BEAM/1.1", "BEAM/2.1"),
                     remote = listOf("BEAM/1.5", "BEAM/2.0"),
                 )
             assertEquals("BEAM/2.0", agreed)
@@ -243,7 +252,7 @@ class LinkSessionTest {
                     sessionId = SESSION_ID,
                     deviceId = "dev-remote",
                     messageId = "00000001",
-                    body = SessionReadyBody("BEAM/1.0").toJsonElement(),
+                    body = SessionReadyBody("BEAM/1.1").toJsonElement(),
                 )
             peer.transport.receiveFrame(readyEnvelope.toCtrlFrame())
             runCurrent()
@@ -492,5 +501,86 @@ class LinkSessionTest {
 
             assertTrue(joiner.events.filterIsInstance<SessionEvent.InvalidMessageDiscarded>().isNotEmpty())
             assertEquals(LinkState.Active, joiner.session.state.value)
+        }
+
+    @Test
+    fun `host SESSION_START marks the beam live and emits BeamStarted`() =
+        runTest {
+            val (joiner, host) = handshakedPair()
+
+            host.session.sendStart()
+            runCurrent()
+
+            val start = host.transport.sent.last()
+            assertEquals(SessionMessageTypes.START, start.typeName())
+
+            joiner.transport.receiveFrame(start)
+            runCurrent()
+
+            assertTrue(joiner.session.beamLive.value)
+            val started = joiner.events.filterIsInstance<SessionEvent.BeamStarted>().single()
+            assertEquals("dev-host", started.hostDeviceId)
+            // ACTIVE alone does not make a beam live.
+            assertEquals(LinkState.Active, joiner.session.state.value)
+        }
+
+    @Test
+    fun `sendStart is a no-op unless the local role is host`() =
+        runTest {
+            val (joiner, _) = handshakedPair()
+            val before = joiner.transport.sent.size
+
+            joiner.session.sendStart()
+            runCurrent()
+
+            assertEquals(before, joiner.transport.sent.size)
+            assertFalse(joiner.session.beamLive.value)
+        }
+
+    @Test
+    fun `SESSION_START from a peer is invalid and leaves the link alive`() =
+        runTest {
+            val (_, host) = handshakedPair()
+
+            // The host's remote is a PEER, so START arriving there is illegal.
+            host.transport.receiveFrame(startEnvelope().toCtrlFrame())
+            runCurrent()
+
+            assertFalse(host.session.beamLive.value)
+            assertTrue(host.events.filterIsInstance<SessionEvent.InvalidMessageDiscarded>().isNotEmpty())
+            assertEquals(LinkState.Active, host.session.state.value)
+        }
+
+    @Test
+    fun `SESSION_START before handshake completion is invalid`() =
+        runTest {
+            val peer = TestPeer("joiner", this)
+            peer.startSession(this)
+
+            peer.transport.receiveFrame(helloEnvelope(messageId = "00000001").toCtrlFrame())
+            runCurrent()
+            peer.transport.receiveFrame(startEnvelope().toCtrlFrame())
+            runCurrent()
+
+            assertFalse(peer.session.beamLive.value)
+            assertEquals(LinkState.Handshaking, peer.session.state.value)
+        }
+
+    @Test
+    fun `duplicate SESSION_START is idempotent`() =
+        runTest {
+            val (joiner, host) = handshakedPair()
+
+            host.session.sendStart()
+            host.session.sendStart()
+            runCurrent()
+
+            val starts = host.transport.sent.filter { it.typeName() == SessionMessageTypes.START }
+            assertEquals(2, starts.size)
+            starts.forEach { joiner.transport.receiveFrame(it) }
+            runCurrent()
+
+            assertTrue(joiner.session.beamLive.value)
+            assertEquals(1, joiner.events.filterIsInstance<SessionEvent.BeamStarted>().size)
         }
 }

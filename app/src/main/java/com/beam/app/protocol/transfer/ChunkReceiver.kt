@@ -13,7 +13,7 @@ enum class ReceiveEndStatus {
 }
 
 class ChunkReceiver(
-    private val metadata: FileMetadata,
+    val metadata: FileMetadata,
     private val tempDir: File,
     private val wire: TransferWire,
     private val onProgress: () -> Unit = {},

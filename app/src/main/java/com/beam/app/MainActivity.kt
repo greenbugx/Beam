@@ -140,6 +140,9 @@ class MainActivity : ComponentActivity() {
                             onLeaveBeam = beamSessionViewModel::stopSession,
                             onAcceptOffer = beamSessionViewModel::acceptIncomingOffer,
                             onRejectOffer = beamSessionViewModel::rejectIncomingOffer,
+                            onCancelTransfer = { transfer ->
+                                beamSessionViewModel.cancelTransfer(transfer.id)
+                            },
                         )
                     }
 

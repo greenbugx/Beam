@@ -11,7 +11,7 @@ enum class CompletionStatus {
 }
 
 class TransferCompleter(
-    private val metadata: FileMetadata,
+    val metadata: FileMetadata,
     private val tempDir: File,
     private val wire: TransferWire,
     private val sidecar: RangesSidecar = RangesSidecar(tempDir, metadata.transferId),
@@ -19,6 +19,10 @@ class TransferCompleter(
     private val state: TransferStateMachine? = null,
 ) {
     var destinationUsed: File? = null
+        private set
+
+    /** Digest computed by the last [complete] call, for mismatch diagnostics. */
+    var lastActualHash: String? = null
         private set
 
     val partFile: File
@@ -43,6 +47,7 @@ class TransferCompleter(
                 timeouts.verification("Verification timed out for ${metadata.transferId}") {
                     FileVerifier.hash(partFile)
                 }
+            lastActualHash = actual
             if (actual == metadata.sha256) {
                 publish(destination)
                 confirm(TransferEvent.HashMatched)

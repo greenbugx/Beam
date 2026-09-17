@@ -1,5 +1,7 @@
 package com.beam.app.protocol.manager
 
+import com.beam.app.protocol.logging.NoopProtocolLogger
+import com.beam.app.protocol.logging.ProtocolLogger
 import com.beam.app.protocol.session.LinkSession
 import com.beam.app.protocol.transfer.ChunkPlan
 import com.beam.app.protocol.transfer.FileMetadata
@@ -30,6 +32,7 @@ class TransferManager(
     private val window: Int = ChunkPlan.DEFAULT_WINDOW_CHUNKS,
     private val clock: Clock = SystemClock,
     private val tickMillis: Long = PROGRESS_TICK_MILLIS,
+    private val logger: ProtocolLogger = NoopProtocolLogger,
 ) {
     private val guard = Any()
     private val links = mutableMapOf<String, TransferLink>()
@@ -59,7 +62,7 @@ class TransferManager(
             check(linkId !in links) { "Link $linkId is already attached" }
         }
         val link =
-            TransferLink(session, linkId, peerName, tempDir, timeouts, window, scope) { event ->
+            TransferLink(session, linkId, peerName, tempDir, timeouts, window, scope, logger) { event ->
                 onLinkEvent(event)
             }
         synchronized(guard) { links[linkId] = link }
@@ -221,7 +224,9 @@ class TransferManager(
         synchronized(guard) {
             for (record in records.values) {
                 if (record.phase.isTerminal) continue
-                val bytes = link(record.linkId)?.bytesTransferred(record.transferId) ?: record.lastBytes
+                val bound = link(record.linkId)
+                val bytes = bound?.bytesTransferred(record.transferId) ?: record.lastBytes
+                if (bytes != record.lastBytes) bound?.logProgress(record.transferId)
                 record.lastBytes = bytes
                 record.rate.sample(bytes)
             }

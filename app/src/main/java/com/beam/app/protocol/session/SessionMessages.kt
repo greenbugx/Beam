@@ -42,6 +42,8 @@ object SessionMessageTypes {
     const val HELLO = "SESSION_HELLO"
     const val READY = "SESSION_READY"
     const val CLOSE = "SESSION_CLOSE"
+
+    const val START = "SESSION_START"
 }
 
 /** A received control message violated the protocol. */
@@ -75,6 +77,12 @@ data class SessionCloseBody(
     @SerialName("detail") val detail: String? = null,
 )
 
+/**
+ * Body of SESSION_START.
+ */
+@Serializable
+class SessionStartBody
+
 internal val sessionJson: Json =
     Json {
         ignoreUnknownKeys = true
@@ -89,6 +97,9 @@ internal fun SessionReadyBody.toJsonElement(): JsonElement =
 
 internal fun SessionCloseBody.toJsonElement(): JsonElement =
     sessionJson.encodeToJsonElement(SessionCloseBody.serializer(), this)
+
+internal fun SessionStartBody.toJsonElement(): JsonElement =
+    sessionJson.encodeToJsonElement(SessionStartBody.serializer(), this)
 
 /**
  * Decodes a typed session body from an envelope's [MessageEnvelope.body].

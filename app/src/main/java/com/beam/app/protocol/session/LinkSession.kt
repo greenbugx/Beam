@@ -5,6 +5,11 @@ import com.beam.app.protocol.Frame
 import com.beam.app.protocol.FrameCodecKind
 import com.beam.app.protocol.FrameType
 import com.beam.app.protocol.MessageEnvelope
+import com.beam.app.protocol.logging.LinkLogContext
+import com.beam.app.protocol.logging.LogDirection
+import com.beam.app.protocol.logging.NoopProtocolLogger
+import com.beam.app.protocol.logging.ProtocolLogger
+import com.beam.app.protocol.transfer.TransferErrorCode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -57,6 +62,10 @@ sealed interface SessionEvent {
         val negotiatedCapabilities: Set<String>,
     ) : SessionEvent
 
+    data class BeamStarted(
+        val hostDeviceId: String,
+    ) : SessionEvent
+
     data class ControlReceived(
         val envelope: MessageEnvelope,
     ) : SessionEvent
@@ -89,9 +98,16 @@ class LinkSession(
     private val scope: CoroutineScope,
     private val supportedVersions: List<String> = listOf(MessageEnvelope.PROTOCOL_VERSION),
     private val advertisedCapabilities: Set<String> = setOf(SessionCapabilities.CHUNKING),
+    logger: ProtocolLogger = NoopProtocolLogger,
 ) {
+    private val log = LinkLogContext(logger, local.sessionId, local.deviceId)
+
     private val _state = MutableStateFlow<LinkState>(LinkState.Handshaking)
     val state: StateFlow<LinkState> = _state
+
+    private val _beamLive = MutableStateFlow(false)
+
+    val beamLive: StateFlow<Boolean> = _beamLive
 
     private val _events = Channel<SessionEvent>(Channel.UNLIMITED)
 
@@ -107,6 +123,7 @@ class LinkSession(
     private var agreedVersion: String? = null
     private var negotiatedCapabilities: Set<String> = emptySet()
     private var readyReceived = false
+    private var beamStarted = false
     private val outMid = MessageIdGenerator()
     private val inMid = MidTracker()
 
@@ -126,6 +143,12 @@ class LinkSession(
     val localIdentity: LocalIdentity get() = local
 
     fun nextOutboundMid(): String = outMid.next()
+
+    suspend fun sendStart() {
+        if (local.role != SessionRole.HOST) return
+        if (_state.value != LinkState.Active) return
+        sendEnvelope(SessionMessageTypes.START, SessionStartBody().toJsonElement())
+    }
 
     /**
      * Sends a transfer-scoped CTRL frame.
@@ -180,7 +203,16 @@ class LinkSession(
             refuse(SessionCloseReason.INVALID_MESSAGE, "Missing messageId")
             return
         }
-        if (inMid.isDuplicate(envelope.messageId)) return
+        if (inMid.isDuplicate(envelope.messageId)) {
+            log.session(
+                messageType = envelope.type,
+                direction = LogDirection.IN,
+                messageId = envelope.messageId,
+                remoteDeviceId = remoteHello?.deviceId,
+                detail = "duplicate mid discarded",
+            )
+            return
+        }
         if (envelope.deviceId.isBlank()) {
             refuse(SessionCloseReason.INVALID_MESSAGE, "Missing deviceId")
             return
@@ -197,13 +229,29 @@ class LinkSession(
             refuse(SessionCloseReason.INVALID_MESSAGE, "${envelope.type} before SESSION_HELLO")
             return
         }
+        if (isSessionLevel(envelope.type)) {
+            log.session(
+                messageType = envelope.type,
+                direction = LogDirection.IN,
+                messageId = envelope.messageId,
+                remoteDeviceId = remoteHello?.deviceId ?: envelope.deviceId,
+            )
+        }
         when (envelope.type) {
             SessionMessageTypes.HELLO -> handleHello(envelope)
             SessionMessageTypes.READY -> handleReady(envelope)
+            SessionMessageTypes.START -> handleStart(envelope)
             SessionMessageTypes.CLOSE -> handleClose(envelope)
             else -> handleUpperLayer(envelope)
         }
     }
+
+    /** True for the message types this layer owns; the rest belong to the transfer layer. */
+    private fun isSessionLevel(type: String): Boolean =
+        type == SessionMessageTypes.HELLO ||
+            type == SessionMessageTypes.READY ||
+            type == SessionMessageTypes.START ||
+            type == SessionMessageTypes.CLOSE
 
     private fun isVersionAcceptable(version: String): Boolean {
         val incoming = BeamVersion.parse(version) ?: return false
@@ -266,6 +314,32 @@ class LinkSession(
         maybeActivate()
     }
 
+    private suspend fun handleStart(envelope: MessageEnvelope) {
+        if (envelope.transferId != null) {
+            onInvalidMessage("transferId on session-level START")
+            return
+        }
+        if (_state.value != LinkState.Active) {
+            onInvalidMessage("${SessionMessageTypes.START} before handshake completion")
+            return
+        }
+        val host = remoteHello
+        if (host?.role != SessionRole.HOST) {
+            onInvalidMessage("${SessionMessageTypes.START} from a non-host peer")
+            return
+        }
+        if (beamStarted) return
+        beamStarted = true
+        _beamLive.value = true
+        log.session(
+            messageType = SessionMessageTypes.START,
+            direction = LogDirection.IN,
+            state = BEAM_STATE_LIVE,
+            remoteDeviceId = host.deviceId,
+        )
+        _events.trySend(SessionEvent.BeamStarted(hostDeviceId = host.deviceId))
+    }
+
     private suspend fun handleClose(envelope: MessageEnvelope) {
         if (envelope.transferId != null) {
             onInvalidMessage("transferId on session-level CLOSE")
@@ -313,6 +387,13 @@ class LinkSession(
         if (remoteHello == null || !readyReceived || _state.value != LinkState.Handshaking) return
         _state.value = LinkState.Active
         val hello = remoteHello ?: return
+        log.session(
+            state = LINK_STATE_ACTIVE,
+            remoteDeviceId = hello.deviceId,
+            detail =
+                "agreedVersion=${agreedVersion ?: MessageEnvelope.PROTOCOL_VERSION} " +
+                    "capabilities=${negotiatedCapabilities.sorted().joinToString(",")}",
+        )
         _events.trySend(
             SessionEvent.HandshakeCompleted(
                 agreedVersion = agreedVersion ?: MessageEnvelope.PROTOCOL_VERSION,
@@ -326,11 +407,21 @@ class LinkSession(
         kind: FrameCodecKind,
         detail: String,
     ) {
+        log.error(
+            errorCode = TransferErrorCode.INVALID_MESSAGE,
+            direction = LogDirection.IN,
+            detail = "malformed frame kind=$kind $detail",
+        )
         _events.trySend(SessionEvent.MalformedFrameDiscarded(kind, detail))
         registerStrike()
     }
 
     private suspend fun onInvalidMessage(detail: String) {
+        log.error(
+            errorCode = TransferErrorCode.INVALID_MESSAGE,
+            direction = LogDirection.IN,
+            detail = detail,
+        )
         _events.trySend(SessionEvent.InvalidMessageDiscarded(detail))
         registerStrike()
     }
@@ -399,6 +490,12 @@ class LinkSession(
             closed = true
         }
         _state.value = LinkState.Closed(reason, graceful, initiatedByRemote)
+        log.session(
+            state = LINK_STATE_CLOSED,
+            direction = if (initiatedByRemote) LogDirection.IN else LogDirection.LOCAL,
+            closeReason = reason,
+            detail = "graceful=$graceful remoteInitiated=$initiatedByRemote",
+        )
         transport.close()
         _events.trySend(SessionEvent.SessionClosed(reason, graceful, initiatedByRemote))
         receiveJob?.cancel()
@@ -407,5 +504,10 @@ class LinkSession(
     private companion object {
         const val MAX_STRIKES = 2
         const val MAX_CLOSE_DETAIL = 200
+
+        /** Session state labels used in Section 40 log lines. */
+        const val LINK_STATE_ACTIVE = "ACTIVE"
+        const val BEAM_STATE_LIVE = "LIVE"
+        const val LINK_STATE_CLOSED = "CLOSED"
     }
 }

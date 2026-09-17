@@ -35,7 +35,7 @@ Under the hood it uses Google's Nearby Connections API, which automatically pick
 | Language | Kotlin |
 | UI | Jetpack Compose |
 | Networking | Google Play Services Nearby Connections |
-| Transfer protocol | BEAM/1, custom app-level protocol -> see [PROTOCOL.md](PROTOCOL.md) |
+| Transfer protocol | BEAM/1.1, custom app-level protocol -> see [PROTOCOL.md](PROTOCOL.md) |
 | Architecture | MVVM with ViewModel |
 | Linting | ktlint (CLI) |
 
@@ -74,7 +74,7 @@ app/src/main/java/com/beam/app/
 ├── MainActivity.kt          # Entry point and screen routing
 ├── network/                 # Nearby Connections wrapper
 ├── permissions/             # Runtime permission handling
-├── protocol/                # BEAM/1 protocol: wire codec, session, file transfer
+├── protocol/                # BEAM/1.1 protocol: wire codec, session, file transfer
 ├── session/                 # Session state, ViewModel, and models
 ├── ui/
 │   ├── components/          # Reusable UI components (buttons, etc.)
@@ -100,12 +100,12 @@ Beam is built milestone by milestone — see [TODO.md](TODO.md) for the full pla
 
 - [x] **M1 — Foundation**: native app, custom design system, home screen, create/join flows, Beam codes
 - [x] **M2 — Sessions & Connectivity**: discovery, advertising, connection handling, peer tracking
-- [ ] **M3 — Single File Transfer**: SAF picker, transfer protocol ([BEAM/1](PROTOCOL.md)), integrity verification
+- [ ] **M3 — Single File Transfer**: SAF picker, transfer protocol ([BEAM/1.1](PROTOCOL.md)), integrity verification
 - [ ] **M4+ — Large files, multi-user rooms, resumable transfers, QR joining, and more**
 
 ## Documentation
 
-- [PROTOCOL.md](PROTOCOL.md) -> the authoritative BEAM/1 protocol design: sessions, messages, chunking, integrity and security.
+- [PROTOCOL.md](PROTOCOL.md) -> the authoritative BEAM/1.1 protocol design: sessions, messages, chunking, integrity and security.
 - [TODO.md](TODO.md) -> milestone plan
 
 ## Contributing

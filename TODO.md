@@ -68,7 +68,9 @@
 ### Session Layer
 
 - [x] Transport abstraction (`Transport`: send frame / receive `Flow` of frames)
-- [x] Typed session messages: `SESSION_HELLO`, `SESSION_READY`, `SESSION_CLOSE`
+- [x] Typed session messages: `SESSION_HELLO`, `SESSION_READY`, `SESSION_CLOSE`, `SESSION_START` (BEAM/1.1)
+- [x] `SESSION_START`: host-only + `ACTIVE`-only "Beam is live" announcement (idempotent, empty body, non-host → `INVALID_MESSAGE`)
+- [x] Protocol version bumped to `BEAM/1.1` across [PROTOCOL.md](PROTOCOL.md) (Section 8, Section 14.15, Section 44 history), code, and tests
 - [x] Handshake state machine (per-link, both roles)
 - [x] Version negotiation (`supportedVersions`, major/minor rules, refuse on major mismatch)
 - [x] Capability exchange + intersection (`CHUNKING` baseline, `MULTI_TRANSFER` optional)
@@ -137,7 +139,7 @@
 - [x] Link loss → `PAUSED`, then `FAILED` when the reconnect window expires; receiver temp survives the window
 - [x] `TempSweep` on manager init
 - [x] [Section 41](PROTOCOL.md#41-testing-strategy) suite repointed at production code + the two missing-state tests
-- [ ] [Section 40](PROTOCOL.md#40-logging) structured logging (events + redaction rules) — protocol emits, app renders
+- [x] [Section 40](PROTOCOL.md#40-logging) structured logging (events + redaction rules) — protocol emits, app renders
 
 #### M3.1 hardening remaining before transport integration
 
@@ -166,8 +168,9 @@
 - [x] Protocol state → `BeamTransfer` (real progress + speed from `TransferManager.transfers` snapshots)
 - [x] `.beam-tmp` temp dir in app storage (`cacheDir/beam-tmp` handed to `TransferManager` on attach)
 - [x] Publish destination: app-scoped `Beam/` + collision-safe naming (`publishDestination`)
-- [ ] Retire [M2](#m2--beam-sessions--connectivity-) ad-hoc text payloads in favor of `SESSION_*` envelopes
-- [ ] Cancel from both sides surfaced in the UI
+- [x] Retire [M2](#m2--beam-sessions--connectivity-) ad-hoc text payloads in favor of `SESSION_*` envelopes (text send/receive path + demux guard deleted; joiner enters the workspace on link `ACTIVE`, host close sends `SESSION_CLOSE{HOST_ENDED}`)
+- [x] Cancel from both sides surfaced in the UI (`CANCEL` action on active/paused rows, either direction → `TransferManager.cancel` → `TRANSFER_CANCEL`)
+- [x] Session lobby ceremony: peers wait in the room screen (`Waiting for the host to start...`) until the host's `SESSION_START`; late joiners are told immediately by `observeLinkState`
 
 ### On-Device Verification
 

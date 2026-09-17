@@ -9,7 +9,7 @@ import org.junit.Test
 class BeamVersionTest {
     @Test
     fun `parses valid versions`() {
-        assertEquals(BeamVersion.parse("BEAM/1.0"), 1 to 0)
+        assertEquals(BeamVersion.parse("BEAM/1.1"), 1 to 1)
         assertEquals(BeamVersion.parse("BEAM/12.34"), 12 to 34)
     }
 
@@ -23,7 +23,7 @@ class BeamVersionTest {
 
     @Test
     fun `no common major returns null`() {
-        assertNull(BeamVersion.negotiate(listOf("BEAM/1.0"), listOf("BEAM/2.0")))
+        assertNull(BeamVersion.negotiate(listOf("BEAM/1.1"), listOf("BEAM/2.0")))
     }
 
     @Test
@@ -34,12 +34,12 @@ class BeamVersionTest {
 
     @Test
     fun `highest common major wins`() {
-        assertEquals("BEAM/2.1", BeamVersion.negotiate(listOf("BEAM/1.0", "BEAM/2.3"), listOf("BEAM/2.1")))
+        assertEquals("BEAM/2.1", BeamVersion.negotiate(listOf("BEAM/1.1", "BEAM/2.3"), listOf("BEAM/2.1")))
     }
 
     @Test
     fun `unparseable remote versions refuse negotiation`() {
-        assertNull(BeamVersion.negotiate(listOf("BEAM/1.0"), listOf("garbage")))
+        assertNull(BeamVersion.negotiate(listOf("BEAM/1.1"), listOf("garbage")))
     }
 }
 

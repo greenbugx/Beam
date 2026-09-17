@@ -48,7 +48,7 @@ private fun TestScope.startTransport(link: FakeByteLink): Pair<NearbyTransport, 
 }
 
 private fun ctrlFrame(type: String = "HELLO"): Frame =
-    Frame(FrameType.CTRL, """{"v":"BEAM/1.0","type":"$type","mid":"m1","sid":"s","did":"d"}""".encodeToByteArray())
+    Frame(FrameType.CTRL, """{"v":"BEAM/1.1","type":"$type","mid":"m1","sid":"s","did":"d"}""".encodeToByteArray())
 
 class NearbyTransportTest {
     @Test

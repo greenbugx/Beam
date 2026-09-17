@@ -34,7 +34,6 @@ class BeamNearbyManager(
     var onEndpointFound: ((String, String) -> Unit)? = null
     var onEndpointLost: ((String) -> Unit)? = null
 
-    var onMessageReceived: ((String, String) -> Unit)? = null
     var onBytesReceived: ((String, ByteArray) -> Unit)? = null
 
     private val payloadCallback =
@@ -51,16 +50,7 @@ class BeamNearbyManager(
                     "Bytes payload received from $endpointId (${bytes.size} bytes)",
                 )
 
-                // TEMPORARY: legacy "BEAM:*" text signals are not
-                // protocol frames, so route them to the text listener only and
-                // keep the protocol transport free of malformed strikes.
-                // Remove when the text path is retired for SESSION_*.
-                if (bytes.isLegacyTextSignal()) {
-                    onMessageReceived?.invoke(endpointId, bytes.decodeToString())
-                } else {
-                    onBytesReceived?.invoke(endpointId, bytes)
-                    onMessageReceived?.invoke(endpointId, bytes.decodeToString())
-                }
+                onBytesReceived?.invoke(endpointId, bytes)
             }
 
             override fun onPayloadTransferUpdate(
@@ -202,21 +192,6 @@ class BeamNearbyManager(
             }
     }
 
-    fun sendMessage(
-        endpointId: String,
-        message: String,
-    ) {
-        Log.d(
-            TAG,
-            "Sending payload to $endpointId: $message",
-        )
-
-        sendBytes(
-            endpointId,
-            message.encodeToByteArray(),
-        )
-    }
-
     /** Sends one raw wire buffer as a BYTES payload. */
     fun sendBytes(
         endpointId: String,
@@ -248,14 +223,6 @@ class BeamNearbyManager(
         connectionsClient.stopDiscovery()
         connectionsClient.stopAllEndpoints()
     }
-
-    /**
-     * TEMPORARY: true for the legacy "BEAM:*" text signals.
-     * A real protocol frame always begins with a 4-byte big-endian length whose
-     * first byte is 0x00, so any buffer starting 'B' (0x42) is legacy text.
-     * Remove when the text path is retired for SESSION_*.
-     */
-    private fun ByteArray.isLegacyTextSignal(): Boolean = isNotEmpty() && this[0] == 'B'.code.toByte()
 
     companion object {
         private const val TAG = "BeamNearby"

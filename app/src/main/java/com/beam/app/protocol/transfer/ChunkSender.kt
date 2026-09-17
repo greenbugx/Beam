@@ -7,7 +7,7 @@ import java.io.InputStream
 import java.util.UUID
 
 class ChunkSender(
-    private val metadata: FileMetadata,
+    val metadata: FileMetadata,
     private val openStream: () -> InputStream,
     private val wire: TransferWire,
     private val window: Int = ChunkPlan.DEFAULT_WINDOW_CHUNKS,
@@ -33,6 +33,9 @@ class ChunkSender(
 
     val bytesAcked: Long
         get() = plan.bytesIn(acked.coalescedRanges())
+
+    val ackedRanges: List<LongRange>
+        get() = acked.coalescedRanges()
 
     suspend fun run(): Long {
         try {

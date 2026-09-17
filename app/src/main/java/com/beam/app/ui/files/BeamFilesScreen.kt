@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.beam.app.session.BeamFilesUiState
 import com.beam.app.session.BeamIncomingOffer
+import com.beam.app.session.BeamTransfer
 import com.beam.app.ui.components.BeamButtonStyle
 import com.beam.app.ui.components.beamAddFilesButton
 import com.beam.app.ui.components.beamBrandMark
@@ -55,6 +56,7 @@ fun beamFilesScreen(
     onLeaveBeam: () -> Unit,
     onAcceptOffer: (BeamIncomingOffer) -> Unit,
     onRejectOffer: (BeamIncomingOffer) -> Unit,
+    onCancelTransfer: (BeamTransfer) -> Unit,
 ) {
     val palette = BeamTheme.palette
     val statusBarPadding = WindowInsets.statusBars.asPaddingValues()
@@ -185,7 +187,10 @@ fun beamFilesScreen(
                     Spacer(modifier = Modifier.height(16.dp))
 
                     beamAppearIn {
-                        beamTransferRow(transfer = transfer)
+                        beamTransferRow(
+                            transfer = transfer,
+                            onCancel = { onCancelTransfer(transfer) },
+                        )
                     }
                 }
             }
@@ -195,7 +200,10 @@ fun beamFilesScreen(
                     Spacer(modifier = Modifier.height(16.dp))
 
                     beamAppearIn {
-                        beamTransferRow(transfer = transfer)
+                        beamTransferRow(
+                            transfer = transfer,
+                            onCancel = { onCancelTransfer(transfer) },
+                        )
                     }
                 }
             }

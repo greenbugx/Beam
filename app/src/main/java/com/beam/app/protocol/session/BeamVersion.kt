@@ -6,7 +6,6 @@ package com.beam.app.protocol.session
 object BeamVersion {
     private val FORMAT = Regex("BEAM/(\\d+)\\.(\\d+)")
 
-    /** Parses a version string like `BEAM/1.0`; returns null for anything else. */
     fun parse(version: String): Pair<Int, Int>? {
         val match = FORMAT.matchEntire(version.trim()) ?: return null
         val (major, minor) = match.destructured

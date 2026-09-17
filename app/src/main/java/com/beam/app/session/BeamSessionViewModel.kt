@@ -8,12 +8,14 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.beam.app.network.BeamNearbyManager
 import com.beam.app.network.NearbyTransportBinding
+import com.beam.app.protocol.logging.BeamProtocolLogger
 import com.beam.app.protocol.manager.FileSource
 import com.beam.app.protocol.manager.TransferDirection
 import com.beam.app.protocol.manager.TransferManager
 import com.beam.app.protocol.manager.TransferSnapshot
 import com.beam.app.protocol.manager.sha256
 import com.beam.app.protocol.session.LinkSession
+import com.beam.app.protocol.session.LinkState
 import com.beam.app.protocol.session.LocalIdentity
 import com.beam.app.protocol.session.SessionCloseReason
 import com.beam.app.protocol.session.SessionRole
@@ -169,7 +171,9 @@ class BeamSessionViewModel(
                 _uiState.value =
                     _uiState.value.copy(
                         state =
-                            if (_uiState.value.room != null) {
+                            if (_uiState.value.room != null ||
+                                _uiState.value.state == BeamSessionState.Sharing
+                            ) {
                                 _uiState.value.state
                             } else {
                                 BeamSessionState.Connected
@@ -184,39 +188,11 @@ class BeamSessionViewModel(
                                 ),
                         message = null,
                     )
-
-                if (_uiState.value.state == BeamSessionState.Sharing) {
-                    nearbyManager.sendMessage(
-                        endpointId,
-                        MSG_BEAM_STARTED,
-                    )
-                }
             }
         }
 
         nearbyManager.onBytesReceived = { endpointId, bytes ->
             transportBinding.onEndpointBytes(endpointId, bytes)
-        }
-
-        // TODO:
-        // Incoming payloads are not surfaced in UI state. Raw wire messages
-        // will be parsed by the transfer protocol (M3) before anything is
-        // shown to the user.
-        nearbyManager.onMessageReceived = { _, message ->
-            // Only joiners react to the start signal; the host is the
-            // one broadcasting it.
-            if (message == MSG_BEAM_STARTED && _uiState.value.room == null) {
-                _uiState.value =
-                    _uiState.value.copy(
-                        state = BeamSessionState.Sharing,
-                        message = null,
-                    )
-            }
-
-            // The host leaving destroys the beam for everyone in it.
-            if (message == MSG_BEAM_CLOSED && _uiState.value.room == null) {
-                destroyBeam(message = "Beam closed")
-            }
         }
 
         nearbyManager.onDisconnected = { endpointId ->
@@ -396,15 +372,15 @@ class BeamSessionViewModel(
                 message = null,
             )
 
-        broadcastBeamStarted()
+        linkSessions.keys.toList().forEach { endpointId -> announceBeamLive(endpointId) }
     }
 
-    private fun broadcastBeamStarted() {
-        _uiState.value.connectedPeers.forEach { peer ->
-            nearbyManager.sendMessage(
-                peer.endpointId,
-                MSG_BEAM_STARTED,
-            )
+    private fun announceBeamLive(endpointId: String) {
+        val session = linkSessions[endpointId] ?: return
+        if (session.state.value != LinkState.Active) return
+        viewModelScope.launch {
+            session.sendStart()
+            Log.d(TAG, "Beam live announced to $endpointId")
         }
     }
 
@@ -591,8 +567,8 @@ class BeamSessionViewModel(
 
     fun stopSession() {
         if (_uiState.value.room != null) {
-            _uiState.value.connectedPeers.forEach { peer ->
-                nearbyManager.sendMessage(peer.endpointId, MSG_BEAM_CLOSED)
+            linkSessions.values.forEach { session ->
+                session.close(SessionCloseReason.HOST_ENDED)
             }
         }
 
@@ -617,6 +593,7 @@ class BeamSessionViewModel(
                         beamCode = _uiState.value.room?.code ?: _uiState.value.joinCode ?: "",
                     ),
                 scope = viewModelScope,
+                logger = BeamProtocolLogger,
             )
 
         linkSessions[endpointId] = session
@@ -625,6 +602,7 @@ class BeamSessionViewModel(
             TransferManager(
                 tempDir = File(getApplication<Application>().cacheDir, TEMP_DIR_NAME),
                 scope = viewModelScope,
+                logger = BeamProtocolLogger,
             )
         transferManagers[endpointId] = manager
         manager.attach(session, linkId = endpointId, peerName = linkPeerName(endpointId))
@@ -643,7 +621,64 @@ class BeamSessionViewModel(
             flushPendingShares(endpointId)
         }
 
+        observeLinkState(endpointId, session)
+
         session.start()
+    }
+
+    private fun observeLinkState(
+        endpointId: String,
+        session: LinkSession,
+    ) {
+        val isHost = _uiState.value.room != null
+
+        session.state
+            .onEach { linkState ->
+                when (linkState) {
+                    is LinkState.Handshaking -> {
+                        // Handshake still in flight; nothing changes in the UI.
+                    }
+
+                    is LinkState.Active -> {
+                        Log.d(TAG, "Link active with $endpointId")
+                        if (isHost && _uiState.value.state == BeamSessionState.Sharing) {
+                            announceBeamLive(endpointId)
+                        }
+                    }
+
+                    is LinkState.Closed -> {
+                        Log.d(
+                            TAG,
+                            "Link closed: $endpointId (reason=${linkState.reason}, " +
+                                "graceful=${linkState.graceful}, remote=${linkState.initiatedByRemote})",
+                        )
+                        linkSessions.remove(endpointId)
+                        if (linkState.initiatedByRemote &&
+                            linkState.reason == SessionCloseReason.HOST_ENDED &&
+                            _uiState.value.room == null
+                        ) {
+                            destroyBeam(message = "Beam closed")
+                        }
+                    }
+                }
+            }.launchIn(viewModelScope)
+
+        if (!isHost) {
+            session.beamLive
+                .onEach { live ->
+                    if (live &&
+                        _uiState.value.room == null &&
+                        _uiState.value.state != BeamSessionState.Sharing
+                    ) {
+                        Log.d(TAG, "Beam live; entering workspace ($endpointId)")
+                        _uiState.value =
+                            _uiState.value.copy(
+                                state = BeamSessionState.Sharing,
+                                message = null,
+                            )
+                    }
+                }.launchIn(viewModelScope)
+        }
     }
 
     /** Merges one manager's snapshots into the shared UI relay. */
@@ -885,6 +920,18 @@ class BeamSessionViewModel(
         }
     }
 
+    fun cancelTransfer(transferId: String) {
+        val manager = managerFor(transferId) ?: return
+        viewModelScope.launch {
+            try {
+                manager.cancel(transferId)
+                Log.d(TAG, "Cancelled transfer $transferId")
+            } catch (e: TransferProtocolException) {
+                Log.w(TAG, "Cancel failed for $transferId: ${e.message}")
+            }
+        }
+    }
+
     /** Finds the manager that owns a transfer id, for user decisions. */
     private fun managerFor(transferId: String): TransferManager? =
         transferManagers.values.firstOrNull { manager -> manager.snapshot(transferId) != null }
@@ -904,11 +951,5 @@ class BeamSessionViewModel(
 
         /** Grace for a peer's handshake before the first share flush. */
         private val SHARE_FLUSH_GRACE = 2.seconds
-
-        // TODO: Session-control signal.
-        private const val MSG_BEAM_STARTED = "BEAM:STARTED"
-
-        // Host-to-joiners signal that the beam was destroyed by its host.
-        private const val MSG_BEAM_CLOSED = "BEAM:CLOSED"
     }
 }

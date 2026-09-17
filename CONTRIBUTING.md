@@ -69,7 +69,7 @@ committed. Run `ktlint -F` before pushing.
 - State flows one direction: action → ViewModel → state → UI. Use
   `StateFlow` for observable state
 
-## Transfer protocol (BEAM/1)
+## Transfer protocol (BEAM/1.1)
 
 The app-level transfer protocol is fully specified in [PROTOCOL.md](PROTOCOL.md).
 Anything touching file transfer, session handling, or messaging must follow it:
@@ -103,7 +103,7 @@ app/src/main/java/com/beam/app/
 ├── MainActivity.kt          # Entry point and screen routing
 ├── network/                 # Nearby Connections wrapper
 ├── permissions/             # Runtime permission handling
-├── protocol/                # BEAM/1 protocol: wire codec, session, file transfer
+├── protocol/                # BEAM/1.1 protocol: wire codec, session, file transfer
 ├── session/                 # Session state, ViewModel, and models
 ├── ui/
 │   ├── components/          # Reusable Beam components

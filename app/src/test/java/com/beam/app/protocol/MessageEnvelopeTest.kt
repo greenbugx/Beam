@@ -11,7 +11,7 @@ import org.junit.Test
 class MessageEnvelopeTest {
     private val envelope =
         MessageEnvelope(
-            version = "BEAM/1.0",
+            version = "BEAM/1.1",
             type = "FILE_OFFER",
             messageId = "A-0042",
             sessionId = "BS-7F3K9Q",
@@ -45,7 +45,7 @@ class MessageEnvelopeTest {
     fun `carries version and sender identity verbatim`() {
         val decoded = MessageEnvelope.decode(envelope.encode())
 
-        assertEquals("BEAM/1.0", decoded.version)
+        assertEquals("BEAM/1.1", decoded.version)
         assertEquals("A-0042", decoded.messageId)
         assertEquals("BS-7F3K9Q", decoded.sessionId)
         assertEquals("11f2", decoded.deviceId)
@@ -56,12 +56,12 @@ class MessageEnvelopeTest {
     fun `ignores unknown fields per the section 8 policy`() {
         val withExtra =
             """{
-                "v": "BEAM/1.0",
+                "v": "BEAM/1.1",
                 "type": "SESSION_HELLO",
                 "mid": "A-0001",
                 "sid": "BS-7F3K9Q",
                 "did": "11f2",
-                "supportedVersions": ["BEAM/1.0", "BEAM/1.1"],
+                "supportedVersions": ["BEAM/1.1", "BEAM/1.2"],
                 "unknownFutureField": 7
             }"""
         val decoded = MessageEnvelope.decode(withExtra)

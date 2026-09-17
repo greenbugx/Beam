@@ -1,6 +1,11 @@
 package com.beam.app.protocol.manager
 
 import com.beam.app.protocol.MessageEnvelope
+import com.beam.app.protocol.logging.LinkLogContext
+import com.beam.app.protocol.logging.LogDirection
+import com.beam.app.protocol.logging.NoopProtocolLogger
+import com.beam.app.protocol.logging.ProtocolLogRedaction
+import com.beam.app.protocol.logging.ProtocolLogger
 import com.beam.app.protocol.session.LinkSession
 import com.beam.app.protocol.session.LinkState
 import com.beam.app.protocol.session.SessionCapabilities
@@ -78,8 +83,62 @@ internal class TransferLink(
     private val timeouts: TransferTimeouts,
     private val window: Int,
     scope: CoroutineScope,
+    logger: ProtocolLogger = NoopProtocolLogger,
     private val onEvent: (LinkEvent) -> Unit,
 ) {
+    private val log =
+        LinkLogContext(logger, session.localIdentity.sessionId, session.localIdentity.deviceId)
+
+    private fun logTransfer(transferId: String) {
+        val phase = phases[transferId] ?: return
+        // Transitions log on phase change; terminal states log exactly once.
+        if (lastLoggedPhase[transferId] == phase) return
+        lastLoggedPhase[transferId] = phase
+        val sender = senders[transferId]
+        val receiver = receivers[transferId]?.receiver
+        val metadata = sender?.metadata ?: receiver?.metadata ?: return
+        log.transfer(
+            transferId = transferId,
+            phase = phase,
+            direction = if (receiver != null && sender == null) LogDirection.IN else LogDirection.OUT,
+            bytesTransferred = sender?.bytesAcked ?: receiver?.bytesReceived,
+            bytesTotal = metadata.sizeBytes,
+            fileName = metadata.name,
+        )
+    }
+
+    fun logProgress(transferId: String) {
+        val phase = phases[transferId] ?: return
+        if (phase.isTerminal) return
+        val sender = senders[transferId]
+        val receiver = receivers[transferId]?.receiver
+        val metadata = sender?.metadata ?: receiver?.metadata ?: return
+        val bytes = sender?.bytesAcked ?: receiver?.bytesReceived ?: return
+        log.transfer(
+            transferId = transferId,
+            phase = phase,
+            direction = if (sender != null) LogDirection.OUT else LogDirection.IN,
+            ranges = sender?.ackedRanges ?: receiver?.receivedRanges ?: emptyList(),
+            bytesTransferred = bytes,
+            bytesTotal = metadata.sizeBytes,
+            fileName = metadata.name,
+        )
+    }
+
+    private fun logError(transferId: String) {
+        val error = errors[transferId] ?: return
+        if (!errorLogged.add(transferId)) return
+        val hashes = hashDetails[transferId]
+        log.error(
+            errorCode = error.code,
+            transferId = transferId,
+            detail = error.detail?.let(ProtocolLogRedaction::paths),
+            expectedHash = hashes?.first,
+            actualHash = hashes?.second,
+            phase = phases[transferId],
+        )
+    }
+
     private class Watchdog(
         val wake: Channel<Unit> = Channel(Channel.CONFLATED),
         val job: Job,
@@ -93,6 +152,15 @@ internal class TransferLink(
     private val decisions = OfferDecisionCache()
     private val phases = mutableMapOf<String, TransferPhase>()
     private val errors = mutableMapOf<String, TransferError>()
+
+    /** Expected/actual digests for `HASH_MISMATCH` ERROR lines. */
+    private val hashDetails = mutableMapOf<String, Pair<String, String>>()
+
+    /** ERROR lines already emitted; one per transfer, keyed by transfer id. */
+    private val errorLogged = mutableSetOf<String>()
+
+    /** Terminal TRANSFER lines already emitted; one per transfer. */
+    private val lastLoggedPhase = mutableMapOf<String, TransferPhase>()
     private val timers = mutableMapOf<String, Job>()
     private val watchdogs = mutableMapOf<String, Watchdog>()
 
@@ -141,6 +209,9 @@ internal class TransferLink(
             senders.clear()
             receivers.clear()
             pendingOffers.clear()
+            hashDetails.clear()
+            errorLogged.clear()
+            lastLoggedPhase.clear()
         }
 
     fun supportsChunking(): Boolean = capabilities.contains(SessionCapabilities.CHUNKING)
@@ -342,10 +413,10 @@ internal class TransferLink(
             }
 
             TransferMessageTypes.VERIFY_FAILED -> {
-                senders[transferId]?.onVerifyFailed(
-                    envelope.body.decodeTransferBody(VerifyFailedBody.serializer(), envelope.type),
-                )
+                val body = envelope.body.decodeTransferBody(VerifyFailedBody.serializer(), envelope.type)
+                senders[transferId]?.onVerifyFailed(body)
                 errors[transferId] = TransferError(TransferErrorCode.HASH_MISMATCH, "Receiver reported a mismatch")
+                hashDetails[transferId] = body.expectedSha256 to body.actualSha256
                 syncPhase(transferId)
             }
 
@@ -468,6 +539,9 @@ internal class TransferLink(
         stopReceiverWatchdog(transferId)
         if (bundle.completer.complete(bundle.destination) == CompletionStatus.VERIFY_FAILED) {
             errors[transferId] = TransferError(TransferErrorCode.HASH_MISMATCH, "Verification failed")
+            bundle.completer.lastActualHash?.let { actual ->
+                hashDetails[transferId] = bundle.completer.metadata.sha256 to actual
+            }
         }
         syncPhase(transferId)
     }
@@ -667,6 +741,10 @@ internal class TransferLink(
     private fun emit(transferId: String) {
         val phase = phases[transferId] ?: return
         onEvent(LinkEvent.PhaseChanged(linkId, transferId, phase, errors[transferId]))
+        if (phase.isTerminal) {
+            logError(transferId)
+            logTransfer(transferId)
+        }
     }
 
     private fun errorCodeFor(reason: RejectReason): TransferErrorCode =

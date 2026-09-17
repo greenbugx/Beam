@@ -20,7 +20,7 @@ data class MessageEnvelope(
     val isSessionLevel: Boolean get() = transferId == null
 
     companion object {
-        const val PROTOCOL_VERSION = "BEAM/1.0"
+        const val PROTOCOL_VERSION = "BEAM/1.1"
 
         /** Decodes an envelope from a CTRL payload (UTF-8 JSON). */
         fun decode(payload: String): MessageEnvelope =
