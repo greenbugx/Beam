@@ -34,10 +34,16 @@ class BeamNearbyManager(
     var onConnectionFailed: ((String) -> Unit)? = null
     var onDisconnected: ((String) -> Unit)? = null
 
+    /** Endpoint id of the single live connection, if any. */
+    @Volatile
+    var connectedEndpointId: String? = null
+        private set
+
     var onEndpointFound: ((String, String) -> Unit)? = null
     var onEndpointLost: ((String) -> Unit)? = null
 
     var onMessageReceived: ((String, String) -> Unit)? = null
+    var onBytesReceived: ((String, ByteArray) -> Unit)? = null
 
     private val payloadCallback =
         object : PayloadCallback() {
@@ -45,16 +51,16 @@ class BeamNearbyManager(
                 endpointId: String,
                 payload: Payload,
             ) {
+                if (payload.type != Payload.Type.BYTES) return
                 val bytes = payload.asBytes() ?: return
-
-                val message = bytes.decodeToString()
 
                 Log.d(
                     TAG,
-                    "Payload received from $endpointId: $message",
+                    "Bytes payload received from $endpointId (${bytes.size} bytes)",
                 )
 
-                onMessageReceived?.invoke(endpointId, message)
+                onBytesReceived?.invoke(endpointId, bytes)
+                onMessageReceived?.invoke(endpointId, bytes.decodeToString())
             }
 
             override fun onPayloadTransferUpdate(
@@ -88,6 +94,7 @@ class BeamNearbyManager(
             ) {
                 if (result.status.statusCode == CommonStatusCodes.SUCCESS) {
                     Log.d(TAG, "Connected: $endpointId")
+                    connectedEndpointId = endpointId
                     onConnected?.invoke(endpointId)
                 } else {
                     Log.d(
@@ -102,6 +109,7 @@ class BeamNearbyManager(
 
             override fun onDisconnected(endpointId: String) {
                 Log.d(TAG, "Disconnected: $endpointId")
+                if (connectedEndpointId == endpointId) connectedEndpointId = null
                 onDisconnected?.invoke(endpointId)
             }
         }
@@ -203,17 +211,34 @@ class BeamNearbyManager(
             "Sending payload to $endpointId: $message",
         )
 
+        sendBytes(
+            endpointId,
+            message.encodeToByteArray(),
+        )
+    }
+
+    /** Sends one raw wire buffer as a BYTES payload. */
+    fun sendBytes(
+        endpointId: String,
+        bytes: ByteArray,
+    ) {
         connectionsClient
             .sendPayload(
                 endpointId,
-                Payload.fromBytes(message.encodeToByteArray()),
+                Payload.fromBytes(bytes),
             ).addOnFailureListener { error ->
                 Log.e(
                     TAG,
-                    "Failed to send payload to $endpointId",
+                    "Failed to send bytes payload to $endpointId",
                     error,
                 )
             }
+    }
+
+    /** Tears down the connection to [endpointId]. */
+    fun disconnectFromEndpoint(endpointId: String) {
+        Log.d(TAG, "Disconnecting from $endpointId")
+        connectionsClient.disconnectFromEndpoint(endpointId)
     }
 
     fun stop() {
