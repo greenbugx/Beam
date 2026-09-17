@@ -132,7 +132,7 @@ internal class TransferLink(
         log.error(
             errorCode = error.code,
             transferId = transferId,
-            detail = error.detail?.let(ProtocolLogRedaction::paths),
+            detail = ProtocolLogRedaction.paths(error.detail),
             expectedHash = hashes?.first,
             actualHash = hashes?.second,
             phase = phases[transferId],
