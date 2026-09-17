@@ -1,6 +1,8 @@
 # Beam Transfer Protocol
 
-> **BEAM/1** - the application-level file transfer protocol for Beam.
+> **BEAM/1.1** - the application-level file transfer protocol for Beam.
+>
+> Major family `BEAM/1`; current minor `1.1`.
 >
 > Status: Authoritative design document for [M3](TODO.md#m3--single-file-transfer-) and beyond.
 
@@ -24,7 +26,7 @@
 
 | Handshake | Offers | Data path | Completion | Errors |
 |---|---|---|---|---|
-| [14.1](#141-session_hello) `SESSION_HELLO` · [14.2](#142-session_ready) `SESSION_READY` · [14.3](#143-session_close) `SESSION_CLOSE` | [14.4](#144-file_offer) `FILE_OFFER` · [14.5](#145-file_accept) `FILE_ACCEPT` · [14.6](#146-file_reject) `FILE_REJECT` | [14.7](#147-transfer_start) `TRANSFER_START` · [14.8](#148-chunk_data) `CHUNK_DATA` · [14.9](#149-chunk_ack) `CHUNK_ACK` · [14.10](#1410-transfer_end) `TRANSFER_END` | [14.11](#1411-transfer_verified) `TRANSFER_VERIFIED` · [14.12](#1412-verify_failed) `VERIFY_FAILED` | [14.13](#1413-transfer_cancel) `TRANSFER_CANCEL` · [14.14](#1414-transfer_error) `TRANSFER_ERROR` |
+| [14.1](#141-session_hello) `SESSION_HELLO` · [14.2](#142-session_ready) `SESSION_READY` · [14.3](#143-session_close) `SESSION_CLOSE` · [14.15](#1415-session_start) `SESSION_START` | [14.4](#144-file_offer) `FILE_OFFER` · [14.5](#145-file_accept) `FILE_ACCEPT` · [14.6](#146-file_reject) `FILE_REJECT` | [14.7](#147-transfer_start) `TRANSFER_START` · [14.8](#148-chunk_data) `CHUNK_DATA` · [14.9](#149-chunk_ack) `CHUNK_ACK` · [14.10](#1410-transfer_end) `TRANSFER_END` | [14.11](#1411-transfer_verified) `TRANSFER_VERIFIED` · [14.12](#1412-verify_failed) `VERIFY_FAILED` | [14.13](#1413-transfer_cancel) `TRANSFER_CANCEL` · [14.14](#1414-transfer_error) `TRANSFER_ERROR` |
 
 ---
 
@@ -104,7 +106,7 @@ The protocol has four **logical layers**. These are not four sockets or four con
 
 | Layer | Responsibility | Messages (examples) |
 |---|---|---|
-| **Session** | Version, identity, capabilities, readiness, closure | `SESSION_HELLO`, `SESSION_READY`, `SESSION_CLOSE` |
+| **Session** | Version, identity, capabilities, readiness, liveness, closure | `SESSION_HELLO`, `SESSION_READY`, `SESSION_START`, `SESSION_CLOSE` |
 | **Control** | Offer/negotiate/control transfers | `FILE_OFFER`, `FILE_ACCEPT`, `FILE_REJECT`, `TRANSFER_CANCEL` |
 | **Data** | Move file content | `TRANSFER_START`, `CHUNK_DATA`, `CHUNK_ACK`, `TRANSFER_END`, `RESUME_REQUEST` |
 | **Integrity** | Prove correctness | File hash comparison, `TRANSFER_VERIFIED`, `VERIFY_FAILED` |
@@ -197,7 +199,8 @@ flowchart TD
 |---|---|---|
 | **Creation** | Host taps "Create Beam" | Host generates `sessionId`, starts advertising via transport, waits for handshakes. |
 | **Joining** | Peer connects (transport-level) | Both sides run the handshake (Section 18). Peer becomes a session member. |
-| **Active** | Handshake complete | Members exchange transfers. Heartbeat via transport; protocol-level liveness ping optional. |
+| **Active** | Handshake complete | Link is usable: control messages and (once live) transfer traffic are allowed. Peers wait in the lobby. Heartbeat via transport; protocol-level liveness ping optional. |
+| **Live** | Host starts the Beam (`SESSION_START`, Section 14.15) | Transfer traffic begins; peers leave the lobby. A peer whose link activates later is told immediately, so it never waits in the lobby. |
 | **Closure (graceful)** | User leaves / host ends Beam | Leaving device sends `SESSION_CLOSE`, then transport disconnect. |
 | **Closure (abrupt)** | Connection lost | Peer links are marked lost; transfers pause; see Section 24/Section 39. |
 | **Expiration** | Host-defined TTL with no members / user inactivity | Host stops advertising; session is dead. Rejoin = new session (new `sessionId`). **Sessions are never resurrected.** |
@@ -266,17 +269,17 @@ erDiagram
 
 ## 8. Protocol Versioning
 
-The protocol version is `MAJOR.MINOR`, written `BEAM/1.0`. It is carried in `SESSION_HELLO` and in the envelope of the first message of every link.
+The protocol version is `MAJOR.MINOR`, written `BEAM/1.1`. It is carried in `SESSION_HELLO` and in the envelope of the first message of every link.
 
 - **Major** (`BEAM/1` vs `BEAM/2`): incompatible wire changes. A major mismatch is refused politely, unless a downgrade is safe (see below).
-- **Minor** (`BEAM/1.0` vs `BEAM/1.1`): additive only - new optional fields, new message types, new capabilities. Never changes meaning of existing fields.
+- **Minor** (`BEAM/1.1` vs `BEAM/1.2`): additive only - new optional fields, new message types, new capabilities. Never changes meaning of existing fields.
 
 **Compatibility rules:**
 
 1. Same major + remote minor ≤ local minor → fully compatible; remote behaves as its version.
 2. Same major + remote minor > local minor → we are the older device: ignore unknown optional fields and unknown message types (Section 8); we must not send fields the remote's minor doesn't declare via capabilities.
 3. Different major → attempt **graceful downgrade**: if we also implement the remote's major (e.g. we speak BEAM/1 and BEAM/2), re-handshake in the *lower* major. Otherwise send `SESSION_CLOSE{reason=UNSUPPORTED_VERSION}` and disconnect. Never guess.
-4. `SESSION_HELLO` carries `supportedVersions: ["BEAM/1.0", "BEAM/1.1"]` so both sides pick the best common version in one round trip.
+4. `SESSION_HELLO` carries `supportedVersions: ["BEAM/1.1"]` - each side advertises every minor it speaks (an implementation may list several), so both sides pick the best common version in one round trip.
 
 Unknown **message types** and unknown **optional fields** are always ignored (logged, never fatal). Unknown **required** behavior - e.g. a capability we don't have but the transfer depends on - is refused with `UNSUPPORTED_FEATURE`.
 
@@ -330,7 +333,7 @@ This split is deliberate: JSON is excellent for tiny, debuggable control message
 Design rules:
 
 - **No message for derivable state.** Progress %, speed, ETA are computed locally from `bytesTransferred`/`sizeBytes` (Section 36). Never put `10%`, `11%`, `12%` on the wire.
-- **Small vocabulary.** ~15 message types total (Section 14). Anything expressible with existing messages + fields is not a new message.
+- **Small vocabulary.** ~16 message types total (Section 14). Anything expressible with existing messages + fields is not a new message.
 - Every message is documented with: purpose, direction, fields, preconditions, success result, failure result, and milestone ([M3](TODO.md#m3--single-file-transfer-) REQUIRED / [M3](TODO.md#m3--single-file-transfer-) OPTIONAL / FUTURE).
 
 ## 11. Message Envelope
@@ -339,7 +342,7 @@ Every control message shares one envelope. Fields earn their place; nothing else
 
 ```text
 {
-  "v": "BEAM/1.0",          // protocol version (handshake-validated; constant per link)
+  "v": "BEAM/1.1",          // protocol version (handshake-validated; constant per link)
   "type": "FILE_OFFER",      // message type
   "mid": "A-0042",           // messageId: per-link monotonically increasing counter
   "sid": "BS-7F3K9Q",       // sessionId
@@ -430,6 +433,7 @@ The complete vocabulary. All types marked **[M3](TODO.md#m3--single-file-transfe
 | `SESSION_HELLO` | Both → Both | Handshake: version, identity, capabilities | [M3](TODO.md#m3--single-file-transfer-) REQUIRED |
 | `SESSION_READY` | Both → Both | Handshake complete; link usable | [M3](TODO.md#m3--single-file-transfer-) REQUIRED |
 | `SESSION_CLOSE` | Either | Clean close; carries reason | [M3](TODO.md#m3--single-file-transfer-) REQUIRED |
+| `SESSION_START` | Host → Peers | Host announces the Beam is live (BEAM/1.1) | [M3](TODO.md#m3--single-file-transfer-) REQUIRED |
 | `FILE_OFFER` | Sender → Receiver | Offer one file with metadata | [M3](TODO.md#m3--single-file-transfer-) REQUIRED |
 | `FILE_ACCEPT` | Receiver → Sender | User accepted | [M3](TODO.md#m3--single-file-transfer-) REQUIRED |
 | `FILE_REJECT` | Receiver → Sender | User rejected / cannot accept | [M3](TODO.md#m3--single-file-transfer-) REQUIRED |
@@ -445,13 +449,13 @@ The complete vocabulary. All types marked **[M3](TODO.md#m3--single-file-transfe
 | `SESSION_PING` / `SESSION_PONG` | Either | Liveness probe | FUTURE (transport-dependent) |
 | `CHUNK_HAVE` / `CHUNK_REQUEST` / `PEER_SOURCE` | Any | Peer-assisted distribution | FUTURE ([M9](TODO.md#m9--peer-assisted-distribution)) |
 
-Message-by-message specification follows in Section 14.1–Section 14.14. For each: **Dir** = sender→receiver.
+Message-by-message specification follows in Section 14.1–Section 14.15. For each: **Dir** = sender→receiver.
 
 ### 14.1 `SESSION_HELLO`
 
 - **Purpose:** Open a protocol session on a fresh transport link; establish version, identity, capabilities.
 - **Preconditions:** Transport connection established. Must be the first control message on a link; a non-HELLO first message is `INVALID_MESSAGE` → close.
-- **Body:** `{ "supportedVersions": ["BEAM/1.0"], "deviceId", "deviceName", "role": "HOST"\|"PEER", "sessionId", "capabilities": ["CHUNKING", …], "beamCode" }`
+- **Body:** `{ "supportedVersions": ["BEAM/1.1"], "deviceId", "deviceName", "role": "HOST"\|"PEER", "sessionId", "capabilities": ["CHUNKING", …], "beamCode" }`
 - **Result:** Peer validates `sessionId`/`beamCode` match what it joined, picks the best common version, replies `SESSION_HELLO`.
 - **Failures:** Version mismatch → `SESSION_CLOSE{UNSUPPORTED_VERSION}`; wrong `sessionId`/code → `SESSION_CLOSE{AUTH_FAILED}`; timeout (Section 31) → disconnect.
 - **Sent twice (retry)**: identical; idempotent (Section 25).
@@ -459,7 +463,7 @@ Message-by-message specification follows in Section 14.1–Section 14.14. For ea
 ### 14.2 `SESSION_READY`
 
 - **Purpose:** Confirms the link is fully usable; both sides may now send transfer traffic.
-- **Body:** `{ "agreedVersion": "BEAM/1.0" }` (negotiated set implied by both HELLOs).
+- **Body:** `{ "agreedVersion": "BEAM/1.1" }` (negotiated set implied by both HELLOs).
 - **Preconditions:** HELLO exchange complete on both sides. Each side sends READY after processing the remote HELLO - exactly one READY each, no request/response pairing (fewer round trips; see Section 18 diagram).
 - **Result:** Link enters `ACTIVE`.
 
@@ -536,6 +540,17 @@ Message-by-message specification follows in Section 14.1–Section 14.14. For ea
 
 - **Body:** `{ "transferId", "error": enum (Section 30), "detail": string? , "fatal": bool }`
 - **Purpose:** clean, structured failure for one transfer. `fatal: false` errors are informational (receiver will still expect recovery); `fatal: true` moves the transfer to `FAILED`. **Never contains stack traces** - detail is a short, safe, human-readable string.
+
+### 14.15 `SESSION_START`
+
+- **Purpose:** the host announces that the Beam is **live** - the lobby phase ends and peers may begin transfer traffic. Host *intent* is not derivable from any other state, which is why it is a message (Section 10) rather than something the UI infers.
+- **Body:** `{}` - no fields. The message *is* the signal.
+- **Direction:** Host → Peers. A `PEER` that sends it is `INVALID_MESSAGE`; a host whose local role is `PEER` sending it is a no-op.
+- **Preconditions:** the link is `ACTIVE` (handshake complete). `SESSION_START` before `ACTIVE` is `INVALID_MESSAGE`.
+- **When sent:** when the host's user starts the Beam, and again to every peer whose link becomes `ACTIVE` afterwards - so a peer joining an already-live Beam skips the lobby instead of waiting forever. Re-sending is idempotent: a receiver emits the liveness transition once and ignores duplicates (Section 25).
+- **Result:** the link is `ACTIVE` *and* live; peers move from the lobby into the transfer workspace. Session-level only: it never carries a `transferId` and does not gate the handshake (a link is usable for control traffic the moment it is `ACTIVE`).
+- **Not a close:** ending a Beam remains `SESSION_CLOSE{reason=HOST_ENDED}` (Section 14.3). `SESSION_START` has no "stop" counterpart - sessions are never paused.
+- **Milestone:** BEAM/1.1 REQUIRED.
 
 ---
 
@@ -862,6 +877,7 @@ The transport is reliable, but retries at the transport layer and racing state t
 |---|---|---|
 | `SESSION_HELLO` | Re-answer with `SESSION_READY` (if already ready) or re-run handshake state | Handshake state machine is idempotent by design |
 | `SESSION_READY` | Ignore silently | Already-ACTIVE check |
+| `SESSION_START` | Ignore silently | Liveness transition emitted once; the flag makes re-delivery a no-op |
 | `FILE_OFFER` | Reply with the **cached prior decision** (accept/reject) without re-prompting the user | `(deviceId, transferId)` → decision map, scoped to session |
 | `FILE_ACCEPT` / `FILE_REJECT` | Ignore; keep current state | State machine transition `OFFERED→ACCEPTED` only valid from `OFFERED` |
 | `TRANSFER_START` | Ignore if already `TRANSFERRING` with same `chunkCount` | State check |
@@ -1213,9 +1229,9 @@ Protocol logging is structured and privacy-conscious. The protocol module emits 
 **Log line concept (one line per protocol event):**
 
 ```text
-BEAM/1.0 | SESSION | sid=BS-7F3K9Q | did=11f2… | MSG=FILE_OFFER mid=A-0042 tid=9c1f…
-BEAM/1.0 | TRANSFER | tid=9c1f… | state=TRANSFERRING | chunks=[[0,120]] | bytes=31.4MB/1.2GB
-BEAM/1.0 | ERROR    | tid=9c1f… | HASH_MISMATCH | expected=ab12… actual=cd34…
+BEAM/1.1 | SESSION | sid=BS-7F3K9Q | did=11f2… | MSG=FILE_OFFER mid=A-0042 tid=9c1f…
+BEAM/1.1 | TRANSFER | tid=9c1f… | state=TRANSFERRING | chunks=[[0,120]] | bytes=31.4MB/1.2GB
+BEAM/1.1 | ERROR    | tid=9c1f… | HASH_MISMATCH | expected=ab12… actual=cd34…
 ```
 
 Always available: session id, device id (short form), message type, message id, transfer id, chunk range(s), state, error enum. Never logged:
@@ -1277,7 +1293,7 @@ Phone B: validate → prompt → FILE_ACCEPT → temp file → CHUNK_ACK
 
 **[M3](TODO.md#m3--single-file-transfer-) REQUIRED**
 
-- Full message set Section 14.1–Section 14.14 (all marked [M3](TODO.md#m3--single-file-transfer-) REQUIRED) with envelope + framing.
+- Full message set Section 14.1–Section 14.15 (all marked [M3](TODO.md#m3--single-file-transfer-) REQUIRED) with envelope + framing.
 - File metadata model (Section 15), transfer IDs (Section 7), transfer states (Section 18) as an exhaustive sealed state machine.
 - Chunking (Section 19) at 256 KiB; streaming I/O (Section 20) - no whole-file reads, ever.
 - Flow control window + cumulative range ACKs (Section 22, Section 23).
@@ -1323,6 +1339,7 @@ Every future milestone activates *reserved* extension points (capabilities, opti
 - **Deprecated messages:** announced by shipping a minor version that stops *sending* them, kept *parseable* for one more minor, removed only in a major bump.
 - **Reserved fields:** none in BEAM/1 envelopes - with JSON, absence is the reserved space. Add fields, don't pad.
 - **Feature flags:** capabilities are the only feature-flag mechanism; no boolean fields scattered in bodies.
+- **Version history:** `BEAM/1.0` - initial [M3](TODO.md#m3--single-file-transfer-) message set (Section 14.1–Section 14.14). `BEAM/1.1` - adds `SESSION_START` (Section 14.15), the host's explicit "the Beam is live" signal, so peers wait in the lobby until the host starts the Beam instead of inferring it from the handshake. Additive only: no existing field changed meaning, and a 1.0 peer that ignores the unknown type still completes the handshake and transfers normally (Section 8).
 - `Device A speaks BEAM/2, B speaks BEAM/1`: A advertises both; both settle on BEAM/1 (A speaks it too) - graceful downgrade, session proceeds at BEAM/1 semantics. If A only speaks BEAM/2 → `SESSION_CLOSE{UNSUPPORTED_VERSION}`, user sees “incompatible Beam version”.
 
 ## 45. Protocol Invariants
@@ -1359,6 +1376,11 @@ sequenceDiagram
     H->>R: CTRL SESSION_READY (agreedVersion)
     R->>H: CTRL SESSION_READY
     Note over H,R: link ACTIVE
+
+    opt host started the Beam (BEAM/1.1)
+        H->>R: CTRL SESSION_START (beam live)
+        Note over H,R: link ACTIVE + LIVE
+    end
 
     H->>R: CTRL FILE_OFFER (tid, name, mime, size, sha256, chunkSize, chunkCount)
     R->>R: validate Section 28 / sanitize name Section 29 / check storage
