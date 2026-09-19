@@ -13,7 +13,9 @@ import com.beam.app.protocol.transfer.TransferPhase
 import com.beam.app.protocol.transfer.TransferProtocolException
 import com.beam.app.protocol.transfer.TransferTimeouts
 import com.beam.app.protocol.transfer.isTerminal
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
@@ -33,6 +35,7 @@ class TransferManager(
     private val clock: Clock = SystemClock,
     private val tickMillis: Long = PROGRESS_TICK_MILLIS,
     private val logger: ProtocolLogger = NoopProtocolLogger,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
     private val guard = Any()
     private val links = mutableMapOf<String, TransferLink>()
@@ -62,7 +65,17 @@ class TransferManager(
             check(linkId !in links) { "Link $linkId is already attached" }
         }
         val link =
-            TransferLink(session, linkId, peerName, tempDir, timeouts, window, scope, logger) { event ->
+            TransferLink(
+                session,
+                linkId,
+                peerName,
+                tempDir,
+                timeouts,
+                window,
+                scope,
+                logger,
+                ioDispatcher = ioDispatcher,
+            ) { event ->
                 onLinkEvent(event)
             }
         synchronized(guard) { links[linkId] = link }
@@ -71,7 +84,13 @@ class TransferManager(
     }
 
     suspend fun detach(linkId: String) {
-        val link = synchronized(guard) { links.remove(linkId) }
+        val link =
+            synchronized(guard) {
+                records.values.filter { it.linkId == linkId && !it.phase.isTerminal }.forEach { record ->
+                    record.lastBytes = links[linkId]?.bytesTransferred(record.transferId) ?: record.lastBytes
+                }
+                links.remove(linkId)
+            }
         link?.close()
     }
 
@@ -140,6 +159,9 @@ class TransferManager(
             ticker?.cancelAndJoin()
             val bound =
                 synchronized(guard) {
+                    records.values.filter { !it.phase.isTerminal }.forEach { record ->
+                        record.lastBytes = links[record.linkId]?.bytesTransferred(record.transferId) ?: record.lastBytes
+                    }
                     val current = links.values.toList()
                     links.clear()
                     current
@@ -184,30 +206,39 @@ class TransferManager(
     }
 
     private fun onLinkEvent(event: LinkEvent) {
-        synchronized(guard) {
-            when (event) {
-                is LinkEvent.OfferReceived -> {
-                    records[event.metadata.transferId] =
-                        Record(
-                            transferId = event.metadata.transferId,
-                            linkId = event.linkId,
-                            peerName = link(event.linkId)?.name ?: event.linkId,
-                            fileName = event.metadata.name,
-                            sizeBytes = event.metadata.sizeBytes,
-                            direction = TransferDirection.RECEIVING,
-                            rate = RateMeter(clock),
-                        )
-                }
+        val changed =
+            synchronized(guard) {
+                when (event) {
+                    is LinkEvent.OfferReceived -> {
+                        records[event.metadata.transferId] =
+                            Record(
+                                transferId = event.metadata.transferId,
+                                linkId = event.linkId,
+                                peerName = link(event.linkId)?.name ?: event.linkId,
+                                fileName = event.metadata.name,
+                                sizeBytes = event.metadata.sizeBytes,
+                                direction = TransferDirection.RECEIVING,
+                                rate = RateMeter(clock),
+                            )
+                        true
+                    }
 
-                is LinkEvent.PhaseChanged -> {
-                    records[event.transferId]?.let { record ->
+                    is LinkEvent.PhaseChanged -> {
+                        val record =
+                            records[event.transferId] ?: return@synchronized false
+                        if (record.phase == event.phase && record.error == event.error) return@synchronized false
+                        if (!record.phase.isTerminal && event.phase.isTerminal) {
+                            record.lastBytes =
+                                link(record.linkId)?.bytesTransferred(record.transferId) ?: record.lastBytes
+                            record.rate.sample(record.lastBytes)
+                        }
                         record.phase = event.phase
                         record.error = event.error
+                        true
                     }
                 }
             }
-        }
-        refresh()
+        if (changed) refresh()
     }
 
     private fun startTicker() {

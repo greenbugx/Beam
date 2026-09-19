@@ -40,8 +40,10 @@ import com.beam.app.protocol.transfer.VerifyFailedBody
 import com.beam.app.protocol.transfer.decodeTransferBody
 import com.beam.app.protocol.transfer.isTerminal
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
@@ -84,6 +86,7 @@ internal class TransferLink(
     private val window: Int,
     scope: CoroutineScope,
     logger: ProtocolLogger = NoopProtocolLogger,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val onEvent: (LinkEvent) -> Unit,
 ) {
     private val log =
@@ -241,7 +244,7 @@ internal class TransferLink(
             throw TransferProtocolException("Link $linkId already has an active transfer ($active)")
         }
         val wire = LinkTransferWire(session, metadata.transferId)
-        val sender = ChunkSender(metadata, { source.open() }, wire, window, timeouts)
+        val sender = ChunkSender(metadata, { source.open() }, wire, window, timeouts, ioDispatcher = ioDispatcher)
         senders[metadata.transferId] = sender
         phases[metadata.transferId] = TransferPhase.Offered
         wire.sendOffer(metadata)
@@ -268,14 +271,23 @@ internal class TransferLink(
         decisions.record(transferId, OfferDecisionCache.Decision.ACCEPTED)
         val wire = LinkTransferWire(session, transferId)
         val receiver =
-            ChunkReceiver(metadata, tempDir, wire) {
+            ChunkReceiver(metadata, tempDir, wire, ioDispatcher = ioDispatcher) {
                 errors.remove(transferId)
                 watchdogs[transferId]?.wake?.trySend(Unit)
             }
         receivers[transferId] =
             ReceiverBundle(
                 receiver = receiver,
-                completer = TransferCompleter(metadata, tempDir, wire, state = receiver.state),
+                completer =
+                    TransferCompleter(
+                        metadata,
+                        tempDir,
+                        wire,
+                        timeouts = timeouts,
+                        state = receiver.state,
+                        ioDispatcher = ioDispatcher,
+                        storageMutex = receiver.storageMutex,
+                    ),
                 destination = destination,
             )
         phases[transferId] = TransferPhase.Accepted

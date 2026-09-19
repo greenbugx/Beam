@@ -41,6 +41,18 @@ class BeamVersionTest {
     fun `unparseable remote versions refuse negotiation`() {
         assertNull(BeamVersion.negotiate(listOf("BEAM/1.1"), listOf("garbage")))
     }
+
+    @Test
+    fun `oversized numeric components are rejected instead of crashing`() {
+        assertNull(BeamVersion.parse("BEAM/99999999999.0"))
+        assertNull(BeamVersion.parse("BEAM/1.99999999999"))
+        assertNull(BeamVersion.negotiate(listOf("BEAM/1.1"), listOf("BEAM/99999999999.0")))
+    }
+
+    @Test
+    fun `upper digit bound still parses`() {
+        assertEquals(BeamVersion.parse("BEAM/999999999.1"), 999_999_999 to 1)
+    }
 }
 
 class MessageIdTest {

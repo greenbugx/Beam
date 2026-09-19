@@ -1,7 +1,6 @@
 package com.beam.app.session
 
 import android.content.ContentResolver
-import android.database.Cursor
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
@@ -19,22 +18,29 @@ object BeamFileMetadata {
         uri: Uri,
     ): BeamSelectedFile {
         val mimeType = readMimeType(contentResolver, uri)
+        val row = queryProviderRow(contentResolver, uri)
         return BeamSelectedFile(
             id = UUID.randomUUID().toString(),
             uri = uri,
-            name = readName(contentResolver, uri, mimeType),
+            name = resolveName(uri, mimeType, row?.name),
             mimeType = mimeType,
-            sizeBytes = readSizeBytes(contentResolver, uri),
+            sizeBytes = row?.sizeBytes ?: measureOpenDescriptor(contentResolver, uri),
         )
     }
 
-    private fun readName(
-        contentResolver: ContentResolver,
+    /** Name and size from a single provider query. */
+    private class ProviderRow(
+        val name: String?,
+        val sizeBytes: Long?,
+    )
+
+    private fun resolveName(
         uri: Uri,
         mimeType: String?,
+        displayName: String?,
     ): String {
         val raw =
-            queryDisplayName(contentResolver, uri)
+            displayName
                 ?: uri.lastPathSegment
                 ?: "file"
 
@@ -73,48 +79,44 @@ object BeamFileMetadata {
             ?.let { MimeTypeMap.getSingleton().getMimeTypeFromExtension(it) }
     }
 
-    private fun readSizeBytes(
+    /**
+     * Reads DISPLAY_NAME and SIZE in one query, positioned on the first row.
+     * Null when the provider fails or returns no usable row.
+     */
+    private fun queryProviderRow(
         contentResolver: ContentResolver,
         uri: Uri,
-    ): Long = querySizeBytes(contentResolver, uri) ?: measureOpenDescriptor(contentResolver, uri)
-
-    private fun queryDisplayName(
-        contentResolver: ContentResolver,
-        uri: Uri,
-    ): String? =
+    ): ProviderRow? =
         runCatching {
-            queryRow(contentResolver, uri, OpenableColumns.DISPLAY_NAME)?.use { cursor ->
-                val column = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            contentResolver
+                .query(
+                    uri,
+                    arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+                    null,
+                    null,
+                    null,
+                )?.use { cursor ->
+                    if (!cursor.moveToFirst()) return@use null
 
-                if (column >= 0 && !cursor.isNull(column)) {
-                    cursor.getString(column)?.takeIf { it.isNotBlank() }
-                } else {
-                    null
+                    val nameColumn = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    val name =
+                        if (nameColumn >= 0 && !cursor.isNull(nameColumn)) {
+                            cursor.getString(nameColumn)?.takeIf { it.isNotBlank() }
+                        } else {
+                            null
+                        }
+
+                    val sizeColumn = cursor.getColumnIndex(OpenableColumns.SIZE)
+                    val sizeBytes =
+                        if (sizeColumn >= 0 && !cursor.isNull(sizeColumn)) {
+                            cursor.getLong(sizeColumn).takeIf { it >= 0 }
+                        } else {
+                            null
+                        }
+
+                    ProviderRow(name, sizeBytes)
                 }
-            }
         }.getOrNull()
-
-    private fun querySizeBytes(
-        contentResolver: ContentResolver,
-        uri: Uri,
-    ): Long? =
-        runCatching {
-            queryRow(contentResolver, uri, OpenableColumns.SIZE)?.use { cursor ->
-                val column = cursor.getColumnIndex(OpenableColumns.SIZE)
-
-                if (column >= 0 && !cursor.isNull(column)) {
-                    cursor.getLong(column).takeIf { it >= 0 }
-                } else {
-                    null
-                }
-            }
-        }.getOrNull()
-
-    private fun queryRow(
-        contentResolver: ContentResolver,
-        uri: Uri,
-        column: String,
-    ): Cursor? = contentResolver.query(uri, arrayOf(column), null, null, null)
 
     private fun measureOpenDescriptor(
         contentResolver: ContentResolver,

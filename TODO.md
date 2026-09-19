@@ -35,7 +35,7 @@
 
 ---
 
-## M3 — Single File Transfer 🚧
+## M3 — Single File Transfer ✅
 
 ### Files UI
 
@@ -183,7 +183,7 @@
 
 ---
 
-# M4 — Large File Transfer
+# M4 — Large File Transfer 🚧
 
 - [x] Buffered streaming
 - [x] Prevent loading entire files into RAM

@@ -26,6 +26,7 @@ import com.beam.app.protocol.transfer.TransferTimeouts
 import com.beam.app.protocol.transfer.decodeTransferBody
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -85,7 +86,13 @@ private class Peer(
             supportedVersions = listOf(MessageEnvelope.PROTOCOL_VERSION),
             advertisedCapabilities = setOf(SessionCapabilities.CHUNKING),
         )
-    val manager = TransferManager(dir, scope.backgroundScope, TransferTimeouts(policy))
+    val manager =
+        TransferManager(
+            dir,
+            scope.backgroundScope,
+            TransferTimeouts(policy),
+            ioDispatcher = StandardTestDispatcher(scope.testScheduler),
+        )
 
     var delivered = 0
 
@@ -467,8 +474,7 @@ class ProtocolSuiteTest {
             pump(sender, receiver, maxRounds = 3)
 
             val sidecar = receiver.sidecarFile(transferId)
-            assertTrue(sidecar.exists())
-            assertEquals(listOf("0-7"), sidecar.readLines().filter { it.isNotBlank() })
+            assertFalse(sidecar.exists())
 
             pump(sender, receiver)
 
@@ -635,7 +641,8 @@ class ProtocolSuiteTest {
             val parent = kotlinx.coroutines.Job()
             val scope = kotlinx.coroutines.CoroutineScope(coroutineContext + parent)
             try {
-                val manager = TransferManager(temp.newFolder(), scope)
+                val manager =
+                    TransferManager(temp.newFolder(), scope, ioDispatcher = StandardTestDispatcher(testScheduler))
                 runCurrent()
                 assertTrue(parent.children.any())
                 manager.close()
@@ -962,12 +969,52 @@ class ProtocolSuiteTest {
     }
 
     @Test
+    fun `chunk progress waits for ticker but cancellation freezes latest bytes immediately`() =
+        runTest {
+            val (sender, receiver, metadata) = idleReceiver()
+            val id = metadata.transferId
+            assertEquals(0L, receiver.snapshot(id)?.bytesTransferred)
+            deliverChunk(sender, receiver, metadata, 0)
+            deliverChunk(sender, receiver, metadata, 1)
+            assertEquals(0L, receiver.snapshot(id)?.bytesTransferred)
+
+            advanceTimeBy(249.milliseconds)
+            runCurrent()
+            assertEquals(0L, receiver.snapshot(id)?.bytesTransferred)
+            advanceTimeBy(1.milliseconds)
+            runCurrent()
+            assertEquals(2L * metadata.chunkSize, receiver.snapshot(id)?.bytesTransferred)
+
+            deliverChunk(sender, receiver, metadata, 2)
+            assertEquals(2L * metadata.chunkSize, receiver.snapshot(id)?.bytesTransferred)
+            receiver.manager.cancel(id)
+            assertEquals(TransferPhase.Cancelled, receiver.phaseOf(id))
+            assertEquals(3L * metadata.chunkSize, receiver.snapshot(id)?.bytesTransferred)
+
+            advanceTimeBy(1.seconds)
+            runCurrent()
+            assertEquals(3L * metadata.chunkSize, receiver.snapshot(id)?.bytesTransferred)
+        }
+
+    @Test
+    fun `detaching before the next ticker freezes latest receiver progress`() =
+        runTest {
+            val (sender, receiver, metadata) = idleReceiver()
+            val id = metadata.transferId
+            deliverChunk(sender, receiver, metadata, 0)
+            assertEquals(0L, receiver.snapshot(id)?.bytesTransferred)
+            receiver.manager.detach(receiver.linkId)
+            assertEquals(TransferPhase.Cancelled, receiver.phaseOf(id))
+            assertEquals(metadata.chunkSize.toLong(), receiver.snapshot(id)?.bytesTransferred)
+        }
+
+    @Test
     fun `receiver inactivity pauses then fails and cleans temps at configured limit`() =
         runTest {
             val (sender, receiver, metadata) = idleReceiver()
             val id = metadata.transferId
             repeat(4) { deliverChunk(sender, receiver, metadata, it.toLong()) }
-            assertTrue(receiver.sidecarFile(id).exists())
+            assertFalse(receiver.sidecarFile(id).exists())
             advanceTimeBy(999.milliseconds)
             runCurrent()
             assertEquals(TransferPhase.Transferring, receiver.phaseOf(id))
@@ -975,8 +1022,7 @@ class ProtocolSuiteTest {
             runCurrent()
             assertEquals(TransferPhase.Paused, receiver.phaseOf(id))
             assertEquals(TransferErrorCode.TRANSFER_TIMEOUT, receiver.errorCodeOf(id))
-            assertTrue(receiver.partFile(id).exists())
-            assertTrue(receiver.sidecarFile(id).exists())
+            assertEquals(listOf("0-3"), receiver.sidecarFile(id).readLines().filter { it.isNotBlank() })
             advanceTimeBy(1.seconds)
             runCurrent()
             assertEquals(TransferPhase.Paused, receiver.phaseOf(id))

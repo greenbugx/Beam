@@ -34,8 +34,8 @@ class MainActivity : ComponentActivity() {
     private val permissionLauncher =
         registerForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions(),
-        ) { result ->
-            if (BeamPermissions.isSatisfied(result)) {
+        ) { _ ->
+            if (BeamPermissions.isSatisfied { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) {
                 pendingAction?.invoke()
             } else {
                 beamSessionViewModel.setPermissionDenied()

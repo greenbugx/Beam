@@ -4,25 +4,29 @@ import com.beam.app.protocol.Frame
 import com.beam.app.protocol.FrameCodec
 import com.beam.app.protocol.FrameCodecException
 import com.beam.app.protocol.FrameCodecKind
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 interface NearbyByteLink {
-    /** Sends one wire buffer to the remote end. */
+    /** Maximum BYTES payload, including the transport envelope. */
+    val maxPayloadSize: Int get() = NearbyFragmentCodec.DEFAULT_MAX_PAYLOAD
+
+    /** Submits one SDK-sized fragment; submission failures must throw. */
     suspend fun sendBytes(bytes: ByteArray)
 
-    /** Tears the underlying connection down. */
     fun close()
 
-    /** Events raised by the underlying link. */
     sealed interface NearbyLinkEvent {
-        /** One complete wire buffer arrived from the remote end. */
         data class BytesReceived(
             val bytes: ByteArray,
         ) : NearbyLinkEvent
@@ -33,124 +37,134 @@ interface NearbyByteLink {
     val incoming: Flow<NearbyLinkEvent>
 }
 
-/**
- * [Transport] over one [NearbyByteLink]: one frame per wire buffer.
- *
- * Outbound frames are encoded with [FrameCodec] and handed to the link as a
- * single buffer; each complete inbound buffer is decoded back into a frame.
- * Malformed payloads surface as [TransportEvent.FrameMalformed] (the session
- * layer's strike policy decides what to do with them) and link loss as
- * [TransportEvent.LinkLost]. After [close], sends are silent no-ops and no
- * further events are emitted.
- */
 class NearbyTransport(
     private val link: NearbyByteLink,
-    private val scope: CoroutineScope,
+    scope: CoroutineScope,
 ) : Transport {
-    private val _incoming = MutableSharedFlow<TransportEvent>(replay = 1, extraBufferCapacity = BUFFER_CAPACITY)
-    override val incoming: Flow<TransportEvent> = _incoming
-
+    private val events = Channel<TransportEvent>(BUFFER_CAPACITY)
+    override val incoming: Flow<TransportEvent> = events.receiveAsFlow()
     private val closed = AtomicBoolean(false)
-
-    /** Collects link events for this transport's lifetime. */
-    private val pumpJob: Job
+    private val outbound = Mutex()
+    private val inboundLock = Any()
+    private val reassembler = NearbyFragmentCodec.Reassembler(link.maxPayloadSize)
+    private var sequence = 0L
+    private var pumpJob: Job? = null
 
     init {
         pumpJob =
             scope.launch(start = CoroutineStart.UNDISPATCHED) {
                 link.incoming.collect { event ->
                     when (event) {
-                        is NearbyByteLink.NearbyLinkEvent.BytesReceived -> onBytes(event.bytes)
-                        NearbyByteLink.NearbyLinkEvent.Disconnected -> onLinkLost()
+                        is NearbyByteLink.NearbyLinkEvent.BytesReceived -> onInboundBytes(event.bytes)
+                        NearbyByteLink.NearbyLinkEvent.Disconnected -> onInboundLinkLost()
                     }
                 }
             }
     }
 
     override suspend fun send(frame: Frame) {
-        if (closed.get()) return
-        val encoded =
+        outbound.withLock {
+            if (closed.get()) return
+            val encoded =
+                try {
+                    FrameCodec.encode(frame)
+                } catch (e: FrameCodecException) {
+                    synchronized(inboundLock) {
+                        emitEvent(TransportEvent.FrameMalformed(FrameCodecKind.INVALID, e.message ?: "encode failed"))
+                    }
+                    return
+                }
             try {
-                FrameCodec.encode(frame)
-            } catch (e: FrameCodecException) {
-                emitEvent(TransportEvent.FrameMalformed(FrameCodecKind.INVALID, e.message ?: "encode failed"))
-                return
+                check(sequence < Long.MAX_VALUE) { "Frame sequence exhausted" }
+                var offset = 0
+                while (offset < encoded.size) {
+                    if (closed.get()) return
+                    val fragment = NearbyFragmentCodec.fragment(encoded, sequence, offset, link.maxPayloadSize)
+                    link.sendBytes(fragment)
+                    offset += fragment.size - NearbyFragmentCodec.HEADER_SIZE
+                }
+                sequence++
+            } catch (e: CancellationException) {
+                // A partially submitted frame cannot be resumed on this connection.
+                onInboundLinkLost()
+                throw e
+            } catch (_: Exception) {
+                onInboundLinkLost()
             }
-        if (closed.get()) return
-        link.sendBytes(encoded)
+        }
     }
 
-    /** True once this transport has been closed or its link reported lost. */
     val isClosed: Boolean get() = closed.get()
 
     override fun close() {
-        if (!closed.compareAndSet(false, true)) return
-        pumpJob.cancel()
-        link.close()
+        synchronized(inboundLock) {
+            if (!closed.compareAndSet(false, true)) return
+            reassembler.clear()
+            events.cancel()
+            pumpJob?.cancel()
+            link.close()
+        }
     }
 
     fun onInboundBytes(bytes: ByteArray) {
-        if (closed.get()) return
-        val frame =
+        synchronized(inboundLock) {
+            if (closed.get()) return
             try {
-                FrameCodec.decode(bytes)
-            } catch (e: FrameCodecException) {
-                emitEvent(TransportEvent.FrameMalformed(e.kind, e.message ?: "malformed frame"))
-                return
+                reassembler.accept(bytes) { complete ->
+                    if (!closed.get()) {
+                        val event =
+                            try {
+                                TransportEvent.FrameReceived(FrameCodec.decode(complete))
+                            } catch (e: FrameCodecException) {
+                                TransportEvent.FrameMalformed(e.kind, e.message ?: "malformed frame")
+                            }
+                        emitEvent(event)
+                    }
+                }
+            } catch (_: IllegalArgumentException) {
+                onInboundLinkLost()
             }
-        emitEvent(TransportEvent.FrameReceived(frame))
+        }
     }
 
     fun onInboundLinkLost() {
-        if (closed.getAndSet(true)) return
-        pumpJob.cancel()
-        emitEvent(TransportEvent.LinkLost)
+        synchronized(inboundLock) {
+            if (closed.getAndSet(true)) return
+            reassembler.clear()
+            pumpJob?.cancel()
+            // Reserve delivery of the terminal event even when the bounded queue overflowed.
+            while (events.tryReceive().isSuccess) { }
+            check(events.trySend(TransportEvent.LinkLost).isSuccess)
+            events.close()
+            link.close()
+        }
     }
 
-    private fun onBytes(bytes: ByteArray) = onInboundBytes(bytes)
-
-    private fun onLinkLost() = onInboundLinkLost()
-
     private fun emitEvent(event: TransportEvent) {
-        _incoming.tryEmit(event)
+        if (!closed.get() && events.trySend(event).isFailure) onInboundLinkLost()
     }
 
     private companion object {
-        const val BUFFER_CAPACITY = 4096
+        const val BUFFER_CAPACITY = 16
     }
 }
 
-/**
- * Routes raw Nearby traffic to the [NearbyTransport] for its endpoint.
- *
- * The production binding owns exactly one live endpoint at a time (the room
- * has a single peer), so the hub holds one transport; the per-endpoint key is
- * kept so a future multi-peer room only changes the binding, not this logic.
- * After [dispatchDisconnected], a reconnect for the same endpoint id gets a
- * fresh transport.
- */
+/** Per-endpoint transport registry. Reconnection always starts with a fresh framing state. */
 class NearbyLinkHub {
     private val transports = ConcurrentHashMap<String, NearbyTransport>()
 
-    /** Current transport for [endpointId], or null when none is registered. */
     fun transportForOrNull(endpointId: String): NearbyTransport? = transports[endpointId]
 
+    @Synchronized
     fun transportFor(
         endpointId: String,
         link: NearbyByteLink,
         scope: CoroutineScope,
     ): NearbyTransport {
-        transports[endpointId]?.let { existing ->
-            if (!existing.isClosed) return existing
-            transports.remove(endpointId, existing)
-        }
-        val created = NearbyTransport(link, scope)
-        val winner = transports.putIfAbsent(endpointId, created) ?: created
-        if (winner !== created) created.close()
-        return winner
+        transports[endpointId]?.let { if (!it.isClosed) return it }
+        return NearbyTransport(link, scope).also { transports[endpointId] = it }
     }
 
-    /** Delivers one wire buffer to the transport registered for [endpointId]. */
     fun dispatchBytes(
         endpointId: String,
         bytes: ByteArray,
@@ -158,13 +172,10 @@ class NearbyLinkHub {
         transports[endpointId]?.onInboundBytes(bytes)
     }
 
-    /** Ends the link for [endpointId], emitting [TransportEvent.LinkLost]. */
     fun dispatchDisconnected(endpointId: String) {
-        val transport = transports.remove(endpointId) ?: return
-        transport.onInboundLinkLost()
+        transports.remove(endpointId)?.onInboundLinkLost()
     }
 
-    /** Closes every registered transport. */
     fun closeAll() {
         transports.values.forEach(NearbyTransport::close)
         transports.clear()

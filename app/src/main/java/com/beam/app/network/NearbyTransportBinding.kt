@@ -3,46 +3,35 @@ package com.beam.app.network
 import com.beam.app.protocol.session.NearbyByteLink
 import com.beam.app.protocol.session.NearbyLinkHub
 import com.beam.app.protocol.session.NearbyTransport
+import com.google.android.gms.nearby.connection.ConnectionsClient
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 
-/**
- * Binds the GMS Nearby connection to the protocol layer's [NearbyLinkHub].
- *
- * Thin shell by design: all framing, demux, and lifecycle logic lives in the
- * JVM-testable seam ([NearbyTransport] / [NearbyLinkHub])
- *
- * This class only adapts callback/threading shapes.
- */
 class NearbyTransportBinding(
     private val manager: BeamNearbyManager,
     private val scope: CoroutineScope,
 ) {
     val hub = NearbyLinkHub()
 
-    private var link: GmsByteLink? = null
-
-    /** The one live byte link, backed by the manager's single connection. */
-    private inner class GmsByteLink : NearbyByteLink {
-        override val incoming = MutableSharedFlow<NearbyByteLink.NearbyLinkEvent>(extraBufferCapacity = 64)
-
-        override suspend fun sendBytes(bytes: ByteArray) {
-            val endpointId = manager.connectedEndpointId ?: error("No connected endpoint")
-            manager.sendBytes(endpointId, bytes)
-        }
-
-        override fun close() {
-            manager.connectedEndpointId?.let { manager.disconnectFromEndpoint(it) }
-        }
+    init {
+        manager.onPayloadFailed = { endpointId -> hub.dispatchDisconnected(endpointId) }
     }
 
-    /** Wires a newly connected endpoint into the hub and returns its transport. */
-    fun onEndpointConnected(endpointId: String): NearbyTransport {
-        val current = link ?: GmsByteLink().also { link = it }
-        return hub.transportFor(endpointId, current, scope)
+    private inner class GmsByteLink(
+        private val connection: BeamNearbyManager.Connection,
+    ) : NearbyByteLink {
+        override val maxPayloadSize: Int = ConnectionsClient.MAX_BYTES_DATA_SIZE
+        override val incoming: Flow<NearbyByteLink.NearbyLinkEvent> = emptyFlow()
+
+        override suspend fun sendBytes(bytes: ByteArray) = manager.sendBytes(connection, bytes)
+
+        override fun close() = manager.disconnect(connection)
     }
 
-    /** Routes one inbound wire buffer to the endpoint's transport. */
+    fun onEndpointConnected(endpointId: String): NearbyTransport =
+        hub.transportFor(endpointId, GmsByteLink(manager.connectionFor(endpointId)), scope)
+
     fun onEndpointBytes(
         endpointId: String,
         bytes: ByteArray,
@@ -50,16 +39,11 @@ class NearbyTransportBinding(
         hub.dispatchBytes(endpointId, bytes)
     }
 
-    /** Ends the endpoint's transport with a [com.beam.app.protocol.session.TransportEvent.LinkLost]. */
     fun onEndpointDisconnected(endpointId: String) {
-        link = null
         hub.dispatchDisconnected(endpointId)
     }
 
-    /** Stops every transport and releases the GMS connection. */
     fun shutdown() {
         hub.closeAll()
-        link?.close()
-        link = null
     }
 }

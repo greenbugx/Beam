@@ -1,5 +1,6 @@
 package com.beam.app.protocol
 
+import com.beam.app.protocol.transfer.FileMetadata
 import java.io.DataInputStream
 import java.io.EOFException
 import java.io.IOException
@@ -10,11 +11,9 @@ object FrameCodec {
     const val HEADER_SIZE = 5
 
     const val MAX_CONTROL_PAYLOAD = 64 * 1024
-    const val MAX_CHUNK_SIZE = 1024 * 1024
 
-    const val CHUNK_HEADER_SIZE = 28
-
-    const val MAX_DATA_PAYLOAD = MAX_CHUNK_SIZE + CHUNK_HEADER_SIZE
+    /** Wire limit for a DATA payload: chunk header plus one chunk. */
+    const val MAX_DATA_PAYLOAD = ChunkHeader.SIZE + FileMetadata.MAX_CHUNK_SIZE_BYTES
 
     fun encode(frame: Frame): ByteArray {
         validatePayloadLimits(frame.type, frame.payload.size)

@@ -30,7 +30,6 @@ class FileMetadataTest {
     fun `empty file is one empty chunk`() {
         assertEquals(1L, FileMetadata.derivedChunkCount(0, 262_144))
         assertTrue(valid(sizeBytes = 0).validate().isEmpty())
-        assertEquals(0L, valid(sizeBytes = 0).lastChunkLength)
     }
 
     @Test

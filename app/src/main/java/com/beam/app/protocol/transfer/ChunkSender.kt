@@ -2,7 +2,11 @@ package com.beam.app.protocol.transfer
 
 import com.beam.app.protocol.ChunkHeader
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withContext
 import java.io.InputStream
 import java.util.UUID
 
@@ -12,13 +16,13 @@ class ChunkSender(
     private val wire: TransferWire,
     private val window: Int = ChunkPlan.DEFAULT_WINDOW_CHUNKS,
     private val timeouts: TransferTimeouts = TransferTimeouts(),
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
     val state = TransferStateMachine(TransferPhase.Offered)
 
     private val plan = ChunkPlan(metadata.sizeBytes, metadata.chunkSize)
     private val transferUuid = UUID.fromString(metadata.transferId)
     private val acked = RangeTracker()
-    private val canceller = TransferCanceller()
 
     private val windowReleased = Channel<Unit>(Channel.CONFLATED)
 
@@ -73,7 +77,6 @@ class ChunkSender(
                 false
             }
         if (!transitioned) return
-        canceller.cancel(error)
         windowReleased.trySend(Unit)
         // A link-loss pause between chunks waits on resumed, not the window.
         resumed.trySend(Unit)
@@ -189,7 +192,10 @@ class ChunkSender(
             ),
         )
         val chunkBuffer = ByteArray(metadata.chunkSize)
-        openStream().use { stream ->
+        var source: InputStream? = null
+        try {
+            withContext(ioDispatcher) { source = openStream() }
+            val stream = checkNotNull(source)
             for (index in 0L until plan.chunkCount) {
                 awaitResumeIfPaused()
                 if (state.phase != TransferPhase.Transferring) {
@@ -197,12 +203,22 @@ class ChunkSender(
                 }
                 awaitWindowSlot()
                 val length = plan.length(index).toInt()
-                readFully(stream, chunkBuffer, length)
+                withContext(ioDispatcher) { readFully(stream, chunkBuffer, length) }
+                awaitResumeIfPaused()
+                if (state.phase != TransferPhase.Transferring) {
+                    throw TransferCancelledException(TransferError(TransferErrorCode.TRANSFER_CANCELLED))
+                }
                 val payload = if (length == chunkBuffer.size) chunkBuffer else chunkBuffer.copyOf(length)
                 wire.sendChunk(ChunkHeader(transferUuid, index, length), payload)
                 sentCount++
                 bytesSent += length
             }
+        } finally {
+            withContext(ioDispatcher + NonCancellable) { source?.close() }
+        }
+        awaitResumeIfPaused()
+        if (state.phase != TransferPhase.Transferring) {
+            throw TransferCancelledException(TransferError(TransferErrorCode.TRANSFER_CANCELLED))
         }
         wire.sendEnd(TransferEndBody(metadata.transferId, bytesSent))
     }

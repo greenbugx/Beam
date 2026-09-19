@@ -15,11 +15,6 @@ class OfferDecisionCache {
 
     private val decisions = ConcurrentHashMap<String, Entry>()
 
-    fun firstArrival(
-        offerId: String,
-        decide: () -> Decision,
-    ): Decision? = decisions.computeIfAbsent(offerId) { entry(decide(), RejectReason.USER_REJECTED) }.decision
-
     /** Records the decision. */
     fun record(
         offerId: String,

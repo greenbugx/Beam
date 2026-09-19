@@ -30,8 +30,6 @@ object BeamPermissions {
             emptyArray()
         }
 
-    fun required(): Array<String> = location + bluetooth + nearbyWifi
-
     /**
      * Returns only the permissions that [check] reports as not granted.
      * Location is skipped entirely when either fine or coarse is already
@@ -40,29 +38,26 @@ object BeamPermissions {
     fun missing(check: (String) -> Boolean): List<String> {
         val toRequest = mutableListOf<String>()
 
-        val hasLocation =
-            check(Manifest.permission.ACCESS_FINE_LOCATION) ||
-                check(Manifest.permission.ACCESS_COARSE_LOCATION)
-
-        if (!hasLocation) {
+        if (!locationSatisfied(check)) {
             toRequest += location
         }
 
-        toRequest += bluetooth.filter { !check(it) }
-        toRequest += nearbyWifi.filter { !check(it) }
+        toRequest += (bluetooth + nearbyWifi).filter { !check(it) }
 
         return toRequest
     }
 
-    fun isSatisfied(grants: Map<String, Boolean>): Boolean {
-        val hasLocation =
-            grants[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-                grants[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+    /**
+     * True when the policy's requirements hold. [check] must answer for
+     * every permission the policy knows about, not only the subset that was
+     * just requested - the permission-result map from the system contains
+     * only the requested entries, so pass a lookup over all grants.
+     */
+    fun isSatisfied(check: (String) -> Boolean): Boolean =
+        locationSatisfied(check) &&
+            (bluetooth + nearbyWifi).all(check)
 
-        if (!hasLocation) return false
-
-        return (bluetooth + nearbyWifi).all {
-            grants[it] == true
-        }
-    }
+    private fun locationSatisfied(check: (String) -> Boolean): Boolean =
+        check(Manifest.permission.ACCESS_FINE_LOCATION) ||
+            check(Manifest.permission.ACCESS_COARSE_LOCATION)
 }

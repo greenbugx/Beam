@@ -1,7 +1,13 @@
+@file:OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+
 package com.beam.app.protocol.transfer
 
 import com.beam.app.protocol.ChunkHeader
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -13,6 +19,7 @@ import org.junit.rules.TemporaryFolder
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.nio.file.Files
+import kotlin.coroutines.CoroutineContext
 
 /** Known SHA-256 test vectors, verified against SHA256SUM. */
 private const val ABC_SHA256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -173,6 +180,40 @@ class TransferCompleterTest {
     }
 
     private fun newCompleter(md: FileMetadata): TransferCompleter = TransferCompleter(md, tempDir, wire)
+
+    @Test
+    fun `cancellation at publication return removes uncommitted file without VERIFIED`() =
+        runTest {
+            val queued = java.util.ArrayDeque<Runnable>()
+            val io =
+                object : CoroutineDispatcher() {
+                    override fun dispatch(
+                        context: CoroutineContext,
+                        block: Runnable,
+                    ) {
+                        queued.addLast(block)
+                    }
+                }
+            val part = writePart("abc".toByteArray())
+            val destination = File(tmp.root, "cancelled.txt")
+            val completer = TransferCompleter(metadata(3, ABC_SHA256), tempDir, wire, ioDispatcher = io)
+            val job = launch { completer.complete(destination) }
+            runCurrent()
+            queued.removeFirst().run() // Hash completes; continuation returns to caller context.
+            runCurrent()
+            queued.removeFirst().run() // Publication completes, but caller has not committed it.
+            assertTrue(destination.exists())
+            job.cancel()
+            runCurrent()
+            queued.removeFirst().run() // Non-cancellable cleanup.
+            runCurrent()
+            job.join()
+            assertTrue(job.isCancelled)
+            assertFalse(destination.exists())
+            assertFalse(part.exists())
+            assertTrue(wire.verified.isEmpty())
+            assertEquals(null, completer.destinationUsed)
+        }
 
     @Before
     fun setUp() {

@@ -30,24 +30,6 @@ data class FileMetadata(
     @SerialName("chunkCount") val chunkCount: Long,
     @SerialName("modifiedAt") val modifiedAt: Long? = null,
 ) {
-    val derivedChunkCount: Long
-        get() = derivedChunkCount(sizeBytes, chunkSize)
-
-    val lastChunkLength: Long
-        get() = if (sizeBytes == 0L) 0L else sizeBytes - (derivedChunkCount - 1) * chunkSize
-
-    fun offsetOf(chunkIndex: Long): Long = chunkIndex * chunkSize
-
-    /** length of a chunk is derived from the file size;
-     *
-     * the last chunk is partial. */
-    fun chunkLengthAt(chunkIndex: Long): Long =
-        when {
-            chunkIndex !in 0L until derivedChunkCount -> 0L
-            chunkIndex < derivedChunkCount - 1 -> chunkSize.toLong()
-            else -> lastChunkLength
-        }
-
     fun validate(): List<MetadataError> {
         val errors = mutableListOf<MetadataError>()
         if (sizeBytes < 0) errors += MetadataError.SIZE_NEGATIVE
@@ -57,7 +39,7 @@ data class FileMetadata(
             chunkSize > MAX_CHUNK_SIZE_BYTES -> errors += MetadataError.CHUNK_SIZE_TOO_LARGE
         }
         if (chunkCount > MAX_CHUNK_COUNT) errors += MetadataError.CHUNK_COUNT_TOO_LARGE
-        if (chunkCount != derivedChunkCount) errors += MetadataError.CHUNK_COUNT_MISMATCH
+        if (chunkCount != derivedChunkCount(sizeBytes, chunkSize)) errors += MetadataError.CHUNK_COUNT_MISMATCH
         if (FilenameSanitizer.sanitize(name).isBlank() || FilenameSanitizer.sanitize(name).length > MAX_NAME_CHARS) {
             errors += MetadataError.NAME_INVALID
         }

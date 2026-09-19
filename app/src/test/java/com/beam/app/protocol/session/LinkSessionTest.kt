@@ -9,6 +9,7 @@ import com.beam.app.protocol.MessageEnvelope
 import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -16,6 +17,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.UUID
+import kotlin.time.Duration.Companion.seconds
 
 private const val SESSION_ID = "sess-0001"
 private const val BEAM_CODE = "BEAM01"
@@ -582,5 +584,33 @@ class LinkSessionTest {
 
             assertTrue(joiner.session.beamLive.value)
             assertEquals(1, joiner.events.filterIsInstance<SessionEvent.BeamStarted>().size)
+        }
+
+    @Test
+    fun `handshake that never completes is closed after the Section 31 timeout`() =
+        runTest {
+            val peer = TestPeer("joiner", this)
+            peer.startSession(this)
+
+            // The peer never answers; the watchdog must close the link silently.
+            advanceTimeBy(10.seconds)
+            runCurrent()
+
+            val closed = peer.session.state.value as LinkState.Closed
+            assertEquals(null, closed.reason)
+            assertFalse(closed.graceful)
+            assertTrue(peer.transport.closed)
+        }
+
+    @Test
+    fun `completed handshake is not closed by the watchdog`() =
+        runTest {
+            val (joiner, host) = handshakedPair()
+
+            advanceTimeBy(30.seconds)
+            runCurrent()
+
+            assertEquals(LinkState.Active, joiner.session.state.value)
+            assertEquals(LinkState.Active, host.session.state.value)
         }
 }

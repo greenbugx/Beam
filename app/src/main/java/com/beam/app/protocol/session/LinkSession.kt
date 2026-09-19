@@ -14,6 +14,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -21,6 +22,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.SerializationException
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.time.Duration.Companion.milliseconds
 
 /** Identity this device presents in its SESSION_HELLO. */
 data class LocalIdentity(
@@ -98,6 +100,7 @@ class LinkSession(
     private val scope: CoroutineScope,
     private val supportedVersions: List<String> = listOf(MessageEnvelope.PROTOCOL_VERSION),
     private val advertisedCapabilities: Set<String> = setOf(SessionCapabilities.CHUNKING),
+    private val handshakeTimeoutMillis: Long = HANDSHAKE_TIMEOUT_MILLIS,
     logger: ProtocolLogger = NoopProtocolLogger,
 ) {
     private val log = LinkLogContext(logger, local.sessionId, local.deviceId)
@@ -116,6 +119,7 @@ class LinkSession(
     private val started = AtomicBoolean(false)
     private val closeMutex = Mutex()
     private var receiveJob: Job? = null
+    private var handshakeWatchdog: Job? = null
 
     @Volatile private var closed = false
     private var strikes = 0
@@ -133,6 +137,14 @@ class LinkSession(
             scope.launch {
                 sendHello()
                 receiveLoop()
+            }
+        handshakeWatchdog =
+            scope.launch {
+                delay(handshakeTimeoutMillis.milliseconds)
+                if (_state.value == LinkState.Handshaking) {
+                    log.session(detail = "handshake timeout, closing link (Section 31)")
+                    abruptClose()
+                }
             }
     }
 
@@ -498,12 +510,15 @@ class LinkSession(
         )
         transport.close()
         _events.trySend(SessionEvent.SessionClosed(reason, graceful, initiatedByRemote))
+        handshakeWatchdog?.cancel()
         receiveJob?.cancel()
     }
 
     private companion object {
         const val MAX_STRIKES = 2
         const val MAX_CLOSE_DETAIL = 200
+
+        const val HANDSHAKE_TIMEOUT_MILLIS = 10_000L
 
         /** Session state labels used in Section 40 log lines. */
         const val LINK_STATE_ACTIVE = "ACTIVE"

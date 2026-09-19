@@ -11,14 +11,17 @@ class RangesSidecar(
 
     /** Flushes coalesced ranges to disk;
      *
-     * writes via temp-file + rename. */
+     * Writes via temp-file + rename, without fsync: a checkpoint is not a crash-durability guarantee. */
     fun flush(ranges: List<LongRange>) {
         tempDir.mkdirs()
         val temp = File(tempDir, "$transferId.ranges.tmp")
-        temp.writeText(ranges.joinToString(separator = "\n") { "${it.first}-${it.last}" } + "\n")
-        if (!temp.renameTo(file)) {
+        try {
+            temp.writeText(ranges.joinToString(separator = "\n") { "${it.first}-${it.last}" } + "\n")
+            if (!temp.renameTo(file)) {
+                throw java.io.IOException("Cannot write ranges sidecar for $transferId")
+            }
+        } finally {
             temp.delete()
-            throw java.io.IOException("Cannot write ranges sidecar for $transferId")
         }
     }
 
@@ -39,7 +42,10 @@ class RangesSidecar(
             }
     }
 
-    fun delete(): Boolean = file.delete()
+    fun delete(): Boolean {
+        File(tempDir, "$transferId.ranges.tmp").delete()
+        return file.delete()
+    }
 }
 
 object TempSweep {

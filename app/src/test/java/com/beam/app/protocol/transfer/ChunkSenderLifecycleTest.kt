@@ -4,8 +4,10 @@ package com.beam.app.protocol.transfer
 
 import com.beam.app.protocol.ChunkHeader
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -18,7 +20,7 @@ class ChunkSenderLifecycleTest {
     @Test
     fun `cancel wakes paused sender and closes source without more DATA`() =
         runTest {
-            val fixture = PausedSenderFixture()
+            val fixture = PausedSenderFixture(StandardTestDispatcher(testScheduler))
             var failure: Throwable? = null
             val job =
                 launch {
@@ -52,7 +54,7 @@ class ChunkSenderLifecycleTest {
     @Test
     fun `owner cancellation preserves exception and closes paused source without INTERNAL_ERROR`() =
         runTest {
-            val fixture = PausedSenderFixture()
+            val fixture = PausedSenderFixture(StandardTestDispatcher(testScheduler))
             var failure: CancellationException? = null
             val job =
                 launch {
@@ -85,7 +87,9 @@ class ChunkSenderLifecycleTest {
         }
 }
 
-private class PausedSenderFixture {
+private class PausedSenderFixture(
+    ioDispatcher: CoroutineDispatcher,
+) {
     private val chunkSize = FileMetadata.MIN_CHUNK_SIZE_BYTES
     private val metadata =
         FileMetadata(
@@ -100,7 +104,7 @@ private class PausedSenderFixture {
         )
     val source = ClosingSource(ByteArray(2 * chunkSize))
     val wire = LifecycleWire()
-    val sender = ChunkSender(metadata, { source }, wire, window = 2)
+    val sender = ChunkSender(metadata, { source }, wire, window = 2, ioDispatcher = ioDispatcher)
 
     init {
         wire.afterChunk = { sender.onLinkLost() }

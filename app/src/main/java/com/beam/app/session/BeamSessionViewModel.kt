@@ -27,7 +27,9 @@ import com.beam.app.protocol.transfer.TransferPhase
 import com.beam.app.protocol.transfer.TransferProtocolException
 import com.beam.app.protocol.transfer.isTerminal
 import com.beam.app.util.BeamCode
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -37,9 +39,14 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileNotFoundException
+import java.io.IOException
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.time.Duration.Companion.seconds
 
 enum class BeamSessionState {
@@ -94,8 +101,18 @@ class BeamSessionViewModel(
     /** Files the user wants to send; every connected peer is offered each one. */
     private val pendingShares = mutableListOf<BeamSelectedFile>()
 
+    /**
+     * Incremented on every session teardown. In-flight SAF metadata reads
+     * captured the generation at pick time; a mismatch means the pick belongs
+     * to a dead session and must be dropped instead of repopulating state.
+     */
+    private val sessionGeneration = AtomicLong(0)
+
     /** File ids already offered per endpoint, so retries skip them. */
     private val offeredFiles = mutableMapOf<String, MutableSet<String>>()
+
+    /** Coalesces concurrent offers without retaining a digest after preparation finishes. */
+    private val preparingMetadata = mutableMapOf<String, Deferred<FileMetadata?>>()
 
     /** Transfer id -> owning endpoint, for snapshot routing and cleanup. */
     private val transferOwners = mutableMapOf<String, String>()
@@ -183,7 +200,7 @@ class BeamSessionViewModel(
                                 BeamPeer(
                                     endpointId = endpointId,
                                     endpointName =
-                                        beamName ?: "Beam Device",
+                                        beamName ?: LOCAL_DEVICE_NAME,
                                     connected = true,
                                 ),
                         message = null,
@@ -335,10 +352,7 @@ class BeamSessionViewModel(
     fun createBeam() {
         val room =
             BeamRoom(
-                id =
-                    java.util.UUID
-                        .randomUUID()
-                        .toString(),
+                id = UUID.randomUUID().toString(),
                 name = "My Beam",
                 code = BeamCode.generateCode(),
             )
@@ -493,7 +507,7 @@ class BeamSessionViewModel(
 
         nearbyManager.requestConnection(
             endpointId = endpointId,
-            localEndpointName = "Beam Device",
+            localEndpointName = LOCAL_DEVICE_NAME,
         )
     }
 
@@ -506,10 +520,9 @@ class BeamSessionViewModel(
     }
 
     /**
-     * TODO:
      * Stores a file picked through the Storage Access Framework. The
-     * picked Uri is kept for the session and offered to peers once the
-     * transfer protocol lands (M3); its metadata is read immediately so
+     * picked Uri is kept for the session and offered to every connected
+     * peer by the transfer protocol; its metadata is read immediately so
      * the file shows up in the workspace.
      */
     fun onFilePicked(uri: Uri) {
@@ -519,6 +532,7 @@ class BeamSessionViewModel(
 
         holdReadPermission(uri)
 
+        val generation = sessionGeneration.get()
         viewModelScope.launch(Dispatchers.IO) {
             val selected =
                 try {
@@ -541,9 +555,16 @@ class BeamSessionViewModel(
                     )
                 }
 
+            if (sessionGeneration.get() != generation) {
+                // The session was torn down while metadata was being read;
+                // re-adding the file would leak it into the next session.
+                Log.d(TAG, "Dropping file picked in a previous session: ${selected.name}")
+                return@launch
+            }
+
             Log.d(TAG, "Picked file added: ${selected.name} (${selected.uri})")
 
-            _selectedFiles.value += selected
+            _selectedFiles.update { it + selected }
             viewModelScope.launch { queueForSharing(selected) }
         }
     }
@@ -587,7 +608,7 @@ class BeamSessionViewModel(
                 local =
                     LocalIdentity(
                         deviceId = localDeviceId,
-                        deviceName = "Beam Device",
+                        deviceName = LOCAL_DEVICE_NAME,
                         role = role,
                         sessionId = "BS-${_uiState.value.room?.code ?: _uiState.value.joinCode}",
                         beamCode = _uiState.value.room?.code ?: _uiState.value.joinCode ?: "",
@@ -640,18 +661,12 @@ class BeamSessionViewModel(
                     }
 
                     is LinkState.Active -> {
-                        Log.d(TAG, "Link active with $endpointId")
                         if (isHost && _uiState.value.state == BeamSessionState.Sharing) {
                             announceBeamLive(endpointId)
                         }
                     }
 
                     is LinkState.Closed -> {
-                        Log.d(
-                            TAG,
-                            "Link closed: $endpointId (reason=${linkState.reason}, " +
-                                "graceful=${linkState.graceful}, remote=${linkState.initiatedByRemote})",
-                        )
                         linkSessions.remove(endpointId)
                         if (linkState.initiatedByRemote &&
                             linkState.reason == SessionCloseReason.HOST_ENDED &&
@@ -670,7 +685,6 @@ class BeamSessionViewModel(
                         _uiState.value.room == null &&
                         _uiState.value.state != BeamSessionState.Sharing
                     ) {
-                        Log.d(TAG, "Beam live; entering workspace ($endpointId)")
                         _uiState.value =
                             _uiState.value.copy(
                                 state = BeamSessionState.Sharing,
@@ -700,6 +714,7 @@ class BeamSessionViewModel(
         reason: SessionCloseReason?,
     ) {
         val session = linkSessions.remove(endpointId) ?: return
+        offeredFiles.remove(endpointId)
         Log.d(TAG, "Stopping link session: $endpointId")
         transferManagers.remove(endpointId)?.let { manager ->
             viewModelScope.launch { manager.close() }
@@ -715,14 +730,7 @@ class BeamSessionViewModel(
     private val localDeviceId: String by lazy { UUID.randomUUID().toString() }
 
     private fun destroyBeam(message: String?) {
-        nearbyManager.stop()
-
-        transportBinding.shutdown()
-        linkSessions.clear()
-        closeTransferManagers()
-        pendingShares.clear()
-        offeredFiles.clear()
-        transferOwners.clear()
+        releaseResources()
         _selectedFiles.value = emptyList()
 
         _uiState.value =
@@ -733,16 +741,22 @@ class BeamSessionViewModel(
     }
 
     override fun onCleared() {
-        nearbyManager.stop()
+        releaseResources()
+        super.onCleared()
+    }
 
+    /** Tears down every protocol and network resource owned by the session. */
+    private fun releaseResources() {
+        sessionGeneration.incrementAndGet()
+        nearbyManager.stop()
         transportBinding.shutdown()
         linkSessions.clear()
         closeTransferManagers()
         pendingShares.clear()
+        preparingMetadata.values.forEach { it.cancel() }
+        preparingMetadata.clear()
         offeredFiles.clear()
         transferOwners.clear()
-
-        super.onCleared()
     }
 
     /** Closes every per-endpoint transfer engine and clears transfer UI state. */
@@ -766,14 +780,27 @@ class BeamSessionViewModel(
         for (file in snapshot) {
             if (file.id in done) continue
             done += file.id
-            val metadata = shareMetadata(file) ?: continue
+            val preparation =
+                preparingMetadata.getOrPut(file.id) {
+                    viewModelScope.async { shareMetadata(file) }
+                }
             viewModelScope.launch {
                 try {
-                    val transferId = offerFile(manager, endpointId, file, metadata)
+                    val metadata = preparation.await() ?: return@launch
+                    if (transferManagers[endpointId] !== manager || file !in pendingShares) return@launch
+                    val transferId =
+                        offerFile(
+                            manager,
+                            endpointId,
+                            file,
+                            metadata.copy(transferId = BeamIds.newTransferId()),
+                        )
                     transferOwners[transferId] = endpointId
                     Log.d(TAG, "Offered ${file.name} to $endpointId (transfer $transferId)")
                 } catch (e: TransferProtocolException) {
                     Log.w(TAG, "Offer of ${file.name} to $endpointId failed: ${e.message}")
+                } finally {
+                    if (preparingMetadata[file.id] === preparation) preparingMetadata.remove(file.id)
                 }
             }
         }
@@ -790,36 +817,37 @@ class BeamSessionViewModel(
         val source =
             FileSource {
                 resolver.openInputStream(file.uri)
-                    ?: throw java.io.FileNotFoundException("Share stream unavailable: ${file.name}")
+                    ?: throw FileNotFoundException("Share stream unavailable: ${file.name}")
             }
         return manager.offer(metadata, source, endpointId)
     }
 
     /** Builds spec-compliant metadata; requires an openable, hashable file. */
-    private fun shareMetadata(file: BeamSelectedFile): FileMetadata? {
-        val resolver = getApplication<Application>().contentResolver
-        val source =
-            FileSource {
-                resolver.openInputStream(file.uri)
-                    ?: throw java.io.FileNotFoundException("Share stream unavailable: ${file.name}")
+    private suspend fun shareMetadata(file: BeamSelectedFile): FileMetadata? =
+        withContext(Dispatchers.IO) {
+            val resolver = getApplication<Application>().contentResolver
+            val source =
+                FileSource {
+                    resolver.openInputStream(file.uri)
+                        ?: throw FileNotFoundException("Share stream unavailable: ${file.name}")
+                }
+            try {
+                val sha256 = source.sha256()
+                FileMetadata(
+                    transferId = BeamIds.newTransferId(),
+                    fileId = BeamIds.newFileId(),
+                    name = file.name,
+                    mime = file.mimeType ?: "application/octet-stream",
+                    sizeBytes = file.sizeBytes,
+                    sha256 = sha256,
+                    chunkSize = FileMetadata.DEFAULT_CHUNK_SIZE_BYTES,
+                    chunkCount = FileMetadata.derivedChunkCount(file.sizeBytes, FileMetadata.DEFAULT_CHUNK_SIZE_BYTES),
+                )
+            } catch (e: IOException) {
+                Log.w(TAG, "Cannot hash ${file.name}: ${e.message}")
+                null
             }
-        return try {
-            val sha256 = source.sha256()
-            FileMetadata(
-                transferId = BeamIds.newTransferId(),
-                fileId = BeamIds.newFileId(),
-                name = file.name,
-                mime = file.mimeType ?: "application/octet-stream",
-                sizeBytes = file.sizeBytes,
-                sha256 = sha256,
-                chunkSize = FileMetadata.DEFAULT_CHUNK_SIZE_BYTES,
-                chunkCount = FileMetadata.derivedChunkCount(file.sizeBytes, FileMetadata.DEFAULT_CHUNK_SIZE_BYTES),
-            )
-        } catch (e: java.io.IOException) {
-            Log.w(TAG, "Cannot hash ${file.name}: ${e.message}")
-            null
         }
-    }
 
     /** Collision-safe destination in app-scoped external Beam/ storage. */
     private fun publishDestination(fileName: String): File {
@@ -842,54 +870,6 @@ class BeamSessionViewModel(
         }
         return candidate
     }
-
-    /** Maps a protocol snapshot onto the workspace transfer row. */
-    private fun TransferSnapshot.toBeamTransfer(): BeamTransfer =
-        BeamTransfer(
-            id = transferId,
-            fileName = fileName,
-            direction =
-                when (direction) {
-                    TransferDirection.SENDING -> BeamTransferDirection.Sending
-                    TransferDirection.RECEIVING -> BeamTransferDirection.Receiving
-                },
-            status =
-                when (phase) {
-                    is TransferPhase.Offered,
-                    is TransferPhase.Accepted,
-                    is TransferPhase.Transferring,
-                    is TransferPhase.Verifying,
-                    -> BeamTransferStatus.Active
-
-                    is TransferPhase.Paused -> BeamTransferStatus.Paused
-
-                    is TransferPhase.Completed -> BeamTransferStatus.Completed
-
-                    is TransferPhase.Rejected,
-                    is TransferPhase.Expired,
-                    is TransferPhase.Cancelled,
-                    is TransferPhase.Failed,
-                    -> BeamTransferStatus.Failed
-                },
-            totalBytes = sizeBytes,
-            progressFraction =
-                if (sizeBytes > 0L) {
-                    (bytesTransferred.toFloat() / sizeBytes).coerceIn(0f, 1f)
-                } else {
-                    1f
-                },
-            speedBytesPerSecond = bytesPerSecond.coerceAtLeast(0L),
-            peerLabel = peerName,
-        )
-
-    /** Maps an offered snapshot onto the accept/reject prompt model. */
-    private fun TransferSnapshot.toIncomingOffer(): BeamIncomingOffer =
-        BeamIncomingOffer(
-            transferId = transferId,
-            fileName = fileName,
-            sizeBytes = sizeBytes,
-            peerLabel = peerName,
-        )
 
     fun acceptIncomingOffer(offer: BeamIncomingOffer) {
         val manager = managerFor(offer.transferId) ?: return
@@ -942,6 +922,9 @@ class BeamSessionViewModel(
 
     companion object {
         private const val TAG = "BeamFiles"
+
+        /** Advertised endpoint and handshake name before a real device name exists. */
+        private const val LOCAL_DEVICE_NAME = "Beam Device"
 
         /** Temp staging dir for incoming chunks, under app cache. */
         private const val TEMP_DIR_NAME = "beam-tmp"

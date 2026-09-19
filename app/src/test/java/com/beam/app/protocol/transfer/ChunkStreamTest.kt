@@ -3,8 +3,10 @@
 package com.beam.app.protocol.transfer
 
 import com.beam.app.protocol.ChunkHeader
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -52,6 +54,7 @@ private class PipedTransfer(
     metadata: FileMetadata,
     tempDir: File,
     window: Int = ChunkPlan.DEFAULT_WINDOW_CHUNKS,
+    ioDispatcher: CoroutineDispatcher,
 ) : TransferWire {
     private val source = sourceBytes(metadata.chunkCount.toInt())
 
@@ -61,8 +64,9 @@ private class PipedTransfer(
             openStream = { ByteArrayInputStream(source) },
             wire = this,
             window = window,
+            ioDispatcher = ioDispatcher,
         )
-    val receiver = ChunkReceiver(metadata, tempDir, this)
+    val receiver = ChunkReceiver(metadata, tempDir, this, ioDispatcher = ioDispatcher)
 
     val acks = mutableListOf<ChunkAckBody>()
     val errors = mutableListOf<TransferErrorBody>()
@@ -110,6 +114,7 @@ private class RecordingWire : TransferWire {
     val chunks = mutableListOf<Pair<ChunkHeader, ByteArray>>()
     var ended = false
     var endBody: TransferEndBody? = null
+    val acks = mutableListOf<ChunkAckBody>()
 
     override suspend fun sendStart(body: TransferStartBody) {
         started = true
@@ -122,7 +127,9 @@ private class RecordingWire : TransferWire {
         chunks += header to payload
     }
 
-    override suspend fun sendAck(body: ChunkAckBody) = Unit
+    override suspend fun sendAck(body: ChunkAckBody) {
+        acks += body
+    }
 
     override suspend fun sendEnd(body: TransferEndBody) {
         ended = true
@@ -151,11 +158,68 @@ class ChunkStreamTest {
     val temp = TemporaryFolder()
 
     @Test
+    fun `ACKs precede checkpoint and byte threshold persists complete range`() =
+        runTest {
+            val chunkSize = 256 * 1024
+            val metadata = testMetadata(65L * chunkSize, chunkSize)
+            val dir = temp.newFolder()
+            val wire = RecordingWire()
+            val receiver = ChunkReceiver(metadata, dir, wire, StandardTestDispatcher(testScheduler), nowNanos = { 0L })
+            val sidecar = RangesSidecar(dir, metadata.transferId)
+            val payload = ByteArray(chunkSize)
+            val id = UUID.fromString(metadata.transferId)
+            try {
+                receiver.onStart(TransferStartBody(metadata.transferId, chunkSize, 65, 0))
+                repeat(63) { receiver.onChunk(ChunkHeader(id, it.toLong(), chunkSize), payload) }
+                assertEquals(15, wire.acks.size)
+                assertTrue(sidecar.read().isEmpty())
+                receiver.onChunk(ChunkHeader(id, 63, chunkSize), payload)
+                assertEquals(16, wire.acks.size)
+                assertEquals(listOf(0L..63L), sidecar.read())
+                receiver.onChunk(ChunkHeader(id, 64, chunkSize), payload)
+                assertEquals(listOf(0L..63L), sidecar.read())
+                receiver.onEnd(TransferEndBody(metadata.transferId, metadata.sizeBytes))
+                assertEquals(listOf(0L..64L), sidecar.read())
+            } finally {
+                receiver.abandon()
+            }
+        }
+
+    @Test
+    fun `elapsed progress checkpoint and controlled abandonment preserve latest ranges`() =
+        runTest {
+            val metadata = testMetadata(4L * 256, 256)
+            val dir = temp.newFolder()
+            var now = 0L
+            val receiver =
+                ChunkReceiver(metadata, dir, RecordingWire(), StandardTestDispatcher(testScheduler), nowNanos = { now })
+            val sidecar = RangesSidecar(dir, metadata.transferId)
+            val id = UUID.fromString(metadata.transferId)
+            receiver.onStart(TransferStartBody(metadata.transferId, 256, 4, 0))
+            try {
+                receiver.onChunk(ChunkHeader(id, 0, 256), chunkPayload(0))
+                now = 999_999_999L
+                receiver.onChunk(ChunkHeader(id, 1, 256), chunkPayload(1))
+                assertTrue(sidecar.read().isEmpty())
+                now = 1_000_000_000L
+                receiver.onChunk(ChunkHeader(id, 2, 256), chunkPayload(2))
+                assertEquals(listOf(0L..2L), sidecar.read())
+                receiver.onChunk(ChunkHeader(id, 3, 256), chunkPayload(3))
+                assertEquals(listOf(0L..2L), sidecar.read())
+            } finally {
+                receiver.abandon()
+            }
+            assertEquals(listOf(0L..3L), sidecar.read())
+            assertEquals(sourceBytes(4).toList(), receiver.partFile.readBytes().toList())
+        }
+
+    @Test
     fun `stale accept-to-start expiry cannot fail a started receiver`() =
         runTest {
             val metadata = testMetadata(sizeBytes = 1, chunkSize = FileMetadata.MIN_CHUNK_SIZE_BYTES)
             val wire = RecordingWire()
-            val receiver = ChunkReceiver(metadata, temp.newFolder(), wire)
+            val receiver =
+                ChunkReceiver(metadata, temp.newFolder(), wire, ioDispatcher = StandardTestDispatcher(testScheduler))
             try {
                 receiver.onStart(TransferStartBody(metadata.transferId, metadata.chunkSize, metadata.chunkCount, 0))
                 receiver.onAcceptToStartExpired()
@@ -172,7 +236,7 @@ class ChunkStreamTest {
     fun `full transfer writes the file and acks on the cadence`() =
         runTest {
             val metadata = testMetadata(sizeBytes = 10L * 256, chunkSize = 256)
-            val piped = PipedTransfer(metadata, temp.newFolder())
+            val piped = PipedTransfer(metadata, temp.newFolder(), ioDispatcher = StandardTestDispatcher(testScheduler))
 
             piped.sender.run()
 
@@ -196,7 +260,7 @@ class ChunkStreamTest {
     fun `empty file transfers one empty chunk`() =
         runTest {
             val metadata = testMetadata(sizeBytes = 0, chunkSize = 256)
-            val piped = PipedTransfer(metadata, temp.newFolder())
+            val piped = PipedTransfer(metadata, temp.newFolder(), ioDispatcher = StandardTestDispatcher(testScheduler))
 
             piped.sender.run()
 
@@ -210,7 +274,7 @@ class ChunkStreamTest {
     fun `one-byte file transfers one one-byte chunk`() =
         runTest {
             val metadata = testMetadata(sizeBytes = 1, chunkSize = 256)
-            val piped = PipedTransfer(metadata, temp.newFolder())
+            val piped = PipedTransfer(metadata, temp.newFolder(), ioDispatcher = StandardTestDispatcher(testScheduler))
 
             piped.sender.run()
 
@@ -229,7 +293,7 @@ class ChunkStreamTest {
     fun `chunkSize plus one sends a short final chunk`() =
         runTest {
             val metadata = testMetadata(sizeBytes = 257, chunkSize = 256)
-            val piped = PipedTransfer(metadata, temp.newFolder())
+            val piped = PipedTransfer(metadata, temp.newFolder(), ioDispatcher = StandardTestDispatcher(testScheduler))
 
             piped.sender.run()
 
@@ -248,7 +312,13 @@ class ChunkStreamTest {
     fun `duplicate CHUNK_DATA is an idempotent rewrite`() =
         runTest {
             val metadata = testMetadata(sizeBytes = 2L * 256, chunkSize = 256)
-            val receiver = ChunkReceiver(metadata, temp.newFolder(), RecordingWire())
+            val receiver =
+                ChunkReceiver(
+                    metadata,
+                    temp.newFolder(),
+                    RecordingWire(),
+                    ioDispatcher = StandardTestDispatcher(testScheduler),
+                )
             val transferUuid = UUID.fromString(metadata.transferId)
 
             receiver.onStart(TransferStartBody(metadata.transferId, 256, 2, 0))
@@ -278,6 +348,7 @@ class ChunkStreamTest {
                     openStream = { ByteArrayInputStream(sourceBytes(10)) },
                     wire = wire,
                     window = 3,
+                    ioDispatcher = StandardTestDispatcher(testScheduler),
                 )
 
             val job = async { sender.run() }
@@ -319,6 +390,7 @@ class ChunkStreamTest {
                     openStream = { ByteArrayInputStream(sourceBytes(10)) },
                     wire = wire,
                     window = 1,
+                    ioDispatcher = StandardTestDispatcher(testScheduler),
                 )
 
             val job = async { runCatching { sender.run() } }
@@ -339,7 +411,7 @@ class ChunkStreamTest {
     fun `receiver-side cancel propagates to the sender and deletes the temp file`() =
         runTest(timeout = 15.seconds) {
             val metadata = testMetadata(sizeBytes = 2L * 256, chunkSize = 256)
-            val wire = PipedTransfer(metadata, temp.newFolder())
+            val wire = PipedTransfer(metadata, temp.newFolder(), ioDispatcher = StandardTestDispatcher(testScheduler))
             val transferUuid = UUID.fromString(metadata.transferId)
 
             wire.receiver.onStart(TransferStartBody(metadata.transferId, 256, 2, 0))
@@ -358,7 +430,7 @@ class ChunkStreamTest {
     fun `cancel is idempotent on both sides`() =
         runTest(timeout = 15.seconds) {
             val metadata = testMetadata(sizeBytes = 2L * 256, chunkSize = 256)
-            val wire = PipedTransfer(metadata, temp.newFolder())
+            val wire = PipedTransfer(metadata, temp.newFolder(), ioDispatcher = StandardTestDispatcher(testScheduler))
             val transferUuid = UUID.fromString(metadata.transferId)
 
             wire.receiver.onStart(TransferStartBody(metadata.transferId, 256, 2, 0))
@@ -397,6 +469,7 @@ class ChunkTimeoutTest {
                     wire = wire,
                     window = 1,
                     timeouts = TransferTimeouts(policy),
+                    ioDispatcher = StandardTestDispatcher(testScheduler),
                 )
 
             val job = async { runCatching { sender.run() } }
@@ -421,6 +494,7 @@ class ChunkTimeoutTest {
                     wire = wire,
                     window = 1,
                     timeouts = TransferTimeouts(policy),
+                    ioDispatcher = StandardTestDispatcher(testScheduler),
                 )
 
             val job = async { sender.run() }
@@ -457,6 +531,7 @@ class ChunkTimeoutTest {
                     wire = wire,
                     window = 1,
                     timeouts = TransferTimeouts(pausePolicy),
+                    ioDispatcher = StandardTestDispatcher(testScheduler),
                 )
 
             val job = async { runCatching { sender.run() } }
@@ -508,6 +583,7 @@ class ChunkTimeoutTest {
                     wire = wire,
                     window = 1,
                     timeouts = TransferTimeouts(pausePolicy),
+                    ioDispatcher = StandardTestDispatcher(testScheduler),
                 )
 
             val job = async { runCatching { sender.run() } }
@@ -535,7 +611,7 @@ class DuplicateHandlingTest {
     fun `duplicate TRANSFER_START with same geometry is ignored`() =
         runTest(timeout = 15.seconds) {
             val metadata = testMetadata(sizeBytes = 2L * 256, chunkSize = 256)
-            val wire = PipedTransfer(metadata, newTempDir())
+            val wire = PipedTransfer(metadata, newTempDir(), ioDispatcher = StandardTestDispatcher(testScheduler))
             val start = TransferStartBody(metadata.transferId, 256, 2, 0)
 
             wire.receiver.onStart(start)
@@ -549,7 +625,7 @@ class DuplicateHandlingTest {
     fun `duplicate TRANSFER_START with different geometry is a protocol error`() =
         runTest(timeout = 15.seconds) {
             val metadata = testMetadata(sizeBytes = 2L * 256, chunkSize = 256)
-            val wire = PipedTransfer(metadata, newTempDir())
+            val wire = PipedTransfer(metadata, newTempDir(), ioDispatcher = StandardTestDispatcher(testScheduler))
 
             wire.receiver.onStart(TransferStartBody(metadata.transferId, 256, 2, 0))
             try {
@@ -564,7 +640,7 @@ class DuplicateHandlingTest {
     fun `duplicate TRANSFER_END after completion is idempotent`() =
         runTest(timeout = 15.seconds) {
             val metadata = testMetadata(sizeBytes = 2L * 256, chunkSize = 256)
-            val wire = PipedTransfer(metadata, newTempDir())
+            val wire = PipedTransfer(metadata, newTempDir(), ioDispatcher = StandardTestDispatcher(testScheduler))
             val transferUuid = UUID.fromString(metadata.transferId)
 
             wire.receiver.onStart(TransferStartBody(metadata.transferId, 256, 2, 0))
@@ -580,7 +656,7 @@ class DuplicateHandlingTest {
     fun `duplicate CHUNK_DATA does not double-count ranges`() =
         runTest(timeout = 15.seconds) {
             val metadata = testMetadata(sizeBytes = 2L * 256, chunkSize = 256)
-            val wire = PipedTransfer(metadata, newTempDir())
+            val wire = PipedTransfer(metadata, newTempDir(), ioDispatcher = StandardTestDispatcher(testScheduler))
             val transferUuid = UUID.fromString(metadata.transferId)
 
             wire.receiver.onStart(TransferStartBody(metadata.transferId, 256, 2, 0))
@@ -599,31 +675,19 @@ class DuplicateHandlingTest {
 
 class OfferDecisionCacheTest {
     @Test
-    fun `same offer id decides exactly once`() {
-        val cache = OfferDecisionCache()
-        var decideCalls = 0
-
-        val first =
-            cache.firstArrival("offer-1") {
-                decideCalls++
-                OfferDecisionCache.Decision.ACCEPTED
-            }
-        val second =
-            cache.firstArrival("offer-1") {
-                decideCalls++
-                OfferDecisionCache.Decision.REJECTED
-            }
-
-        assertEquals(OfferDecisionCache.Decision.ACCEPTED, first)
-        assertEquals(OfferDecisionCache.Decision.ACCEPTED, second)
-        assertEquals(1, decideCalls)
-    }
-
-    @Test
     fun `recorded decision is readable afterwards`() {
         val cache = OfferDecisionCache()
         assertNull(cache.decisionFor("offer-2"))
         cache.record("offer-2", OfferDecisionCache.Decision.REJECTED)
         assertEquals(OfferDecisionCache.Decision.REJECTED, cache.decisionFor("offer-2"))
+    }
+
+    @Test
+    fun `record keeps the real rejection reason`() {
+        val cache = OfferDecisionCache()
+        cache.record("offer-3", OfferDecisionCache.Decision.REJECTED, RejectReason.BUSY)
+        assertEquals(RejectReason.BUSY, cache.rejectionReasonFor("offer-3"))
+        cache.record("offer-4", OfferDecisionCache.Decision.ACCEPTED)
+        assertNull(cache.rejectionReasonFor("offer-4"))
     }
 }

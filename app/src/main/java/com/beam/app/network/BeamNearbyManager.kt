@@ -8,6 +8,7 @@ import com.google.android.gms.nearby.connection.AdvertisingOptions
 import com.google.android.gms.nearby.connection.ConnectionInfo
 import com.google.android.gms.nearby.connection.ConnectionLifecycleCallback
 import com.google.android.gms.nearby.connection.ConnectionResolution
+import com.google.android.gms.nearby.connection.ConnectionsClient
 import com.google.android.gms.nearby.connection.DiscoveredEndpointInfo
 import com.google.android.gms.nearby.connection.DiscoveryOptions
 import com.google.android.gms.nearby.connection.EndpointDiscoveryCallback
@@ -15,6 +16,10 @@ import com.google.android.gms.nearby.connection.Payload
 import com.google.android.gms.nearby.connection.PayloadCallback
 import com.google.android.gms.nearby.connection.PayloadTransferUpdate
 import com.google.android.gms.nearby.connection.Strategy
+import kotlinx.coroutines.suspendCancellableCoroutine
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 class BeamNearbyManager(
     context: Context,
@@ -26,30 +31,30 @@ class BeamNearbyManager(
     var onConnectionFailed: ((String) -> Unit)? = null
     var onDisconnected: ((String) -> Unit)? = null
 
-    /** Endpoint id of the single live connection, if any. */
-    @Volatile
-    var connectedEndpointId: String? = null
-        private set
+    internal class Connection(
+        val endpointId: String,
+    )
+
+    private val connections = ConcurrentHashMap<String, Connection>()
+
+    internal fun connectionFor(endpointId: String): Connection =
+        connections[endpointId] ?: error("No connected endpoint: $endpointId")
 
     var onEndpointFound: ((String, String) -> Unit)? = null
     var onEndpointLost: ((String) -> Unit)? = null
 
     var onBytesReceived: ((String, ByteArray) -> Unit)? = null
+    var onPayloadFailed: ((String) -> Unit)? = null
 
-    private val payloadCallback =
+    private fun payloadCallback(connection: Connection) =
         object : PayloadCallback() {
             override fun onPayloadReceived(
                 endpointId: String,
                 payload: Payload,
             ) {
+                if (connections[endpointId] !== connection) return
                 if (payload.type != Payload.Type.BYTES) return
                 val bytes = payload.asBytes() ?: return
-
-                Log.d(
-                    TAG,
-                    "Bytes payload received from $endpointId (${bytes.size} bytes)",
-                )
-
                 onBytesReceived?.invoke(endpointId, bytes)
             }
 
@@ -57,7 +62,13 @@ class BeamNearbyManager(
                 endpointId: String,
                 update: PayloadTransferUpdate,
             ) {
-                // File transfer progress will be implemented later.
+                if (connections[endpointId] !== connection) return
+                if (update.status == PayloadTransferUpdate.Status.FAILURE ||
+                    update.status == PayloadTransferUpdate.Status.CANCELED
+                ) {
+                    onPayloadFailed?.invoke(endpointId)
+                    disconnect(connection)
+                }
             }
         }
 
@@ -72,10 +83,9 @@ class BeamNearbyManager(
                     "Connection initiated: $endpointId (${connectionInfo.endpointName})",
                 )
 
-                connectionsClient.acceptConnection(
-                    endpointId,
-                    payloadCallback,
-                )
+                val connection = Connection(endpointId)
+                connections.put(endpointId, connection)?.let { onPayloadFailed?.invoke(endpointId) }
+                connectionsClient.acceptConnection(endpointId, payloadCallback(connection))
             }
 
             override fun onConnectionResult(
@@ -84,7 +94,6 @@ class BeamNearbyManager(
             ) {
                 if (result.status.statusCode == CommonStatusCodes.SUCCESS) {
                     Log.d(TAG, "Connected: $endpointId")
-                    connectedEndpointId = endpointId
                     onConnected?.invoke(endpointId)
                 } else {
                     Log.d(
@@ -93,13 +102,14 @@ class BeamNearbyManager(
                             "code=${result.status.statusCode}",
                     )
 
+                    connections.remove(endpointId)
                     onConnectionFailed?.invoke(endpointId)
                 }
             }
 
             override fun onDisconnected(endpointId: String) {
                 Log.d(TAG, "Disconnected: $endpointId")
-                if (connectedEndpointId == endpointId) connectedEndpointId = null
+                connections.remove(endpointId)
                 onDisconnected?.invoke(endpointId)
             }
         }
@@ -192,33 +202,38 @@ class BeamNearbyManager(
             }
     }
 
-    /** Sends one raw wire buffer as a BYTES payload. */
-    fun sendBytes(
-        endpointId: String,
+    internal suspend fun sendBytes(
+        connection: Connection,
         bytes: ByteArray,
     ) {
-        connectionsClient
-            .sendPayload(
-                endpointId,
-                Payload.fromBytes(bytes),
-            ).addOnFailureListener { error ->
-                Log.e(
-                    TAG,
-                    "Failed to send bytes payload to $endpointId",
-                    error,
-                )
-            }
+        check(connections[connection.endpointId] === connection) { "Connection replaced" }
+        require(bytes.size <= ConnectionsClient.MAX_BYTES_DATA_SIZE)
+        suspendCancellableCoroutine<Unit> { continuation ->
+            connectionsClient
+                .sendPayload(connection.endpointId, Payload.fromBytes(bytes))
+                .addOnSuccessListener { if (continuation.isActive) continuation.resume(Unit) }
+                .addOnFailureListener { error ->
+                    if (continuation.isActive) continuation.resumeWithException(error)
+                }.addOnCanceledListener { continuation.cancel() }
+        }
+    }
+
+    internal fun disconnect(connection: Connection) {
+        if (connections.remove(connection.endpointId, connection)) {
+            connectionsClient.disconnectFromEndpoint(connection.endpointId)
+        }
     }
 
     /** Tears down the connection to [endpointId]. */
     fun disconnectFromEndpoint(endpointId: String) {
         Log.d(TAG, "Disconnecting from $endpointId")
-        connectionsClient.disconnectFromEndpoint(endpointId)
+        connections[endpointId]?.let(::disconnect)
     }
 
     fun stop() {
         Log.d(TAG, "Stopping Nearby Connections")
 
+        connections.clear()
         connectionsClient.stopAdvertising()
         connectionsClient.stopDiscovery()
         connectionsClient.stopAllEndpoints()
@@ -229,6 +244,6 @@ class BeamNearbyManager(
 
         const val SERVICE_ID = "com.beam.app"
 
-        private val STRATEGY = Strategy.P2P_CLUSTER
+        private val STRATEGY = Strategy.P2P_STAR
     }
 }

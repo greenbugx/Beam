@@ -1,5 +1,6 @@
 package com.beam.app.protocol
 
+import com.beam.app.protocol.transfer.FileMetadata
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -30,7 +31,7 @@ class ChunkHeaderTest {
             ChunkHeader(
                 transferId = UUID.randomUUID(),
                 chunkIndex = 1L shl 40,
-                chunkLength = FrameCodec.MAX_CHUNK_SIZE,
+                chunkLength = FileMetadata.MAX_CHUNK_SIZE_BYTES,
             )
         assertEquals(header, ChunkHeader.decode(header.encode()))
     }

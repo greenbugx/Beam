@@ -4,7 +4,9 @@ package com.beam.app.protocol.session
  * BEAM/MAJOR.MINOR protocol version handling.
  */
 object BeamVersion {
-    private val FORMAT = Regex("BEAM/(\\d+)\\.(\\d+)")
+    // Bounded digit groups: an unbounded \d+ would let a remote version like
+    // "BEAM/99999999999.0" crash parse() with a NumberFormatException.
+    private val FORMAT = Regex("BEAM/(\\d{1,9})\\.(\\d{1,9})")
 
     fun parse(version: String): Pair<Int, Int>? {
         val match = FORMAT.matchEntire(version.trim()) ?: return null
